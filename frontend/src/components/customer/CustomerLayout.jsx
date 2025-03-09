@@ -10,6 +10,7 @@ import {
     faBars,
     faTimes,
 } from '@fortawesome/free-solid-svg-icons';
+import DashboardSwitcher from '../pages/DashboardSwitcher';
 
 const CustomerLayout = () => {
     const navigate = useNavigate();
@@ -19,7 +20,7 @@ const CustomerLayout = () => {
     const handleLogout = () => {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
-        navigate('/login');
+        navigate('/');
     };
 
     return (
@@ -231,6 +232,7 @@ const CustomerLayout = () => {
             {/* Main Content */}
             <main className="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
                 <div className="bg-white rounded-lg shadow p-6">
+                <DashboardSwitcher/>
                     <Outlet />
                 </div>
             </main>

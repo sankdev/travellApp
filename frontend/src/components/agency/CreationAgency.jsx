@@ -34,24 +34,15 @@ const CreationAgency = () => {
 
     const fetchAgencies = async () => {
         try {
-            const response = await agencyService.getAgencies({ page, search });
+            const response = await agencyService.getUserAgencies();
             console.log('API Response:', response);
     
-            // Vérifiez si la pagination est présente
-            if (response.pagination) {
-                setTotalPages(response.pagination.page);
-            } else {
-                console.warn('Pagination is missing in response');
-                setTotalPages(1); // Valeur par défaut si la pagination est absente
-            }
+         
     
             // Vérifiez si les données d'agences sont présentes
-            if (Array.isArray(response.data)) {
+            
                 setAgencies(response.data);
-            } else {
-                setAgencies([]);
-                console.warn('Agencies data is missing or not an array');
-            }
+            
         } catch (err) {
             console.error('Fetch error:', err.response ? err.response.data : err.message);
             setError('Failed to fetch agencies');
@@ -107,8 +98,10 @@ const CreationAgency = () => {
                 setSuccess('Agency updated successfully!');
             } else {
                 const response = await agencyService.createAgency(formDataToSend);
-                const agencyId = response.data.id;
-                console.log('agencyId', agencies);
+console.log('Response from createAgency:', response);
+
+                const agencyId = response.id;
+                console.log('agencyId', agencyId);
 
                 // Upload images associated with the agency
                 const imageFormData = new FormData();
@@ -126,10 +119,14 @@ const CreationAgency = () => {
                 }
                 imageFormData.append('entityId', agencyId);
                 imageFormData.append('entityType', 'agency');
-
-                await imageService.uploadImages(imageFormData);
-
-                setSuccess('Agency created successfully!');
+                try {
+                    await imageService.uploadImages(imageFormData);
+                } catch (imageError) {
+                    console.error('Image upload error:', imageError.response || imageError);
+                    setError('Failed to upload agency images');
+                    return; // Arrête l'exécution si l'upload échoue
+                }
+                setSuccess('agenccy',response.data)
             }
             setFormData({
                 name: '',

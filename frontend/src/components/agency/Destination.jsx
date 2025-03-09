@@ -31,8 +31,8 @@ const Destination = () => {
     const fetchDestinations = async () => {
         try {
             const response = await destinationService.getDestinations();
-            console.log(response);
-            setDestinations(Array.isArray(response.data) ? response.data : []);
+            console.log('destinations',response);
+            setDestinations(Array.isArray(response) ? response : []);
         } catch (err) {
             setError('Failed to fetch destinations');
         }

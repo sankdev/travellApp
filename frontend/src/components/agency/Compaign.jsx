@@ -73,7 +73,7 @@ const Compaign = () => {
 
     const fetchCompaigns = async () => {
         try {
-            const response = await compaignService.getCompaigns();
+            const response = await compaignService.getCompaignsByUser();
             console.log('Compaign',response)
             setCompaigns(response)
         } catch (err) {

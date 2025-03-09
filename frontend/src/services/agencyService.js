@@ -5,6 +5,7 @@ const API_URL = 'http://localhost:5000/api'; // Removed trailing slash
 export const agencyService = {
     getAgencyProfile: async (id) => {
         const token = localStorage.getItem('token');
+        const userId=localStorage.getItem('userId')
         try {
             const response = await axios.get(`${API_URL}/agency/${id}`, {
                 headers: { Authorization: `Bearer ${token}` }
@@ -74,8 +75,9 @@ export const agencyService = {
     },
     getUserAgencies: async (params) => {
         const token = localStorage.getItem('token');
+        const userId=localStorage.getItem('userId')
         try {
-            const response = await axios.get(`${API_URL}/agency/userAgency`, {
+            const response = await axios.get(`${API_URL}/agency/userAgency/${userId}`, {
                 params,
                 headers: { Authorization: `Bearer ${token}` }
             });

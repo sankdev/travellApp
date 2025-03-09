@@ -82,6 +82,8 @@ console.log('filteredPayments',filteredPayments)
                 <th className="py-3 px-4 text-left">Montant (XOF)</th>
                 <th className="py-3 px-4 text-left">Date</th>
                 <th className="py-3 px-4 text-left">Facture</th>
+                
+
                 <th className="py-3 px-4 text-left">Client</th>
                 <th className="py-3 px-4 text-left">Statut</th>
                 <th className="py-3 px-4 text-center">Action</th>
@@ -100,16 +102,17 @@ console.log('filteredPayments',filteredPayments)
                       {payment.invoicePayment ? (
                         <span className="flex items-center gap-2 text-blue-600">
                           <FontAwesomeIcon icon={faFileInvoice} />
-                          Total #{payment.invoicePayment.
-                            totalWithTax
-                            }-restant:{payment.invoicePayment.balance.toLocaleString()}
+                          Total:{payment.invoicePayment.
+                            totalWithTax}-restant:{payment.invoicePayment.balance.toLocaleString()}-
+                            
                         </span>
                         
                       ) : (
                         <span className="text-gray-500">Aucune</span>
                       )}
                     </td>
-
+                    
+                    
                     {/* ✅ Affichage du client lié */}
                     <td className="py-3 px-4">
                       {payment.invoicePayment?.customer ? (

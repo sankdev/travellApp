@@ -4,9 +4,9 @@ import { agencyService } from '../../../services/agencyService';
 import { companyService } from '../../../services/companyService';
 import { customerService } from '../../../services/customerService';
 import { destinationService } from '../../../services/destinationService';
-import { documentService } from '../../../services/documentService';
+import { agencyAssociationService } from '../../../services/agencyAssociationService';
 import { reservationService } from '../../../services/reservationService';
-import { volService } from '../../../services/volService';
+import { pricingRuleService } from '../../../services/pricingRuleService';
 import { passengerService } from '../../../services/passengerService';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -70,11 +70,12 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
         birthDate: '',
         birthPlace: '',
         nationality: '',
-        profession: '',
+        profession: '',typePassenger:"",
         address: '',
         document:[{
             documentType:'',
             documentNumber:'',
+            issueDate: '',expirationDate: '',
             files:null
         }],
         status: 'active'
@@ -84,18 +85,30 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
         agencyId: '',
         destinationId: '',
         companyId: '', 
-        volId: '',
+        agencyVolId: '',
         campaignId: '',
         returnVolId: '',
         startAt: '',
         endAt: '',
         description: '',
-        startDestinationId: '', endDestinationId: '', classId: '',
+        startDestinationId: '', endDestinationId: '', agencyClassId: '',
         tripType: 'one-way'
         , totalPrice: ''
     });
 
     const inputClassName = "mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-sm";
+  
+    const formatDate = (dateString) => { 
+        return new Date(dateString).toLocaleString('fr-FR', {
+          weekday: 'long', // "dimanche"
+          day: '2-digit', // "09"
+          month: 'long', // "mars"
+          year: 'numeric', // "2025"
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      };
 
     useEffect(() => {
         const fetchData = async () => {
@@ -122,7 +135,7 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
     useEffect(() => {
         if (classSearch.length > 0) {
             const filtered = classes.filter((cls) =>
-                cls.name.toLowerCase().includes(classSearch.toLowerCase())
+                cls.class.name.toLowerCase().includes(classSearch.toLowerCase())
             );
             setFilteredClasses(filtered);
         } else {
@@ -138,7 +151,7 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
             return;
         }
         const filtered = classes.filter((cls) =>
-            cls.name.toLowerCase().includes(value.toLowerCase())
+            cls.class.name.toLowerCase().includes(value.toLowerCase())
         );
         setFilteredClasses(filtered);
         setShowClassSuggestions(filtered.length > 0);
@@ -147,27 +160,91 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
     useEffect(() => {
         if (returnVolSearch.length > 0) {
             const filtered = vols.filter((vol) =>
-                vol.name.toLowerCase().includes(returnVolSearch.toLowerCase())
+                (vol.flight?.name?.toLowerCase() || '').includes(returnVolSearch.toLowerCase())
             );
             setFilteredReturnVols(filtered);
         } else {
             setFilteredReturnVols(vols);
         }
     }, [returnVolSearch, vols]);
-
-    const handleReturnVolSearch = (value) => {
-        setReturnVolSearch(value);
-        if (value.trim() === '') {
-            setFilteredReturnVols([]);
-            setShowReturnVolSuggestions(false);
-            return;
-        }
-        const filtered = vols.filter((vol) =>
-            vol.name.toLowerCase().includes(value.toLowerCase())
-        );
-        setFilteredReturnVols(filtered);
-        setShowReturnVolSuggestions(filtered.length > 0);
-    };
+    
+        // calcule de price  en fonction de vol class et typePassenger
+        // const handlePriceCalculation = async () => {
+        //     const selectedVol = vols.find((v) => v.id === formData.agencyVolId);
+        //     const selectedClass = Array.isArray(classes) ? classes.find((cls) => cls.id === formData.agencyClassId) : null;
+        
+        //     if (!selectedVol || !selectedClass) {
+        //         setTotalPrice(0);
+        //         return;
+        //     }
+        
+        //     let basePrice = selectedVol.price * selectedClass.priceMultiplier;
+        
+        //     if (formData.tripType === "round-trip") {
+        //         const selectedReturnVol = vols.find((v) => v.id === formData.returnVolId);
+        //         if (selectedReturnVol) {
+        //             basePrice += selectedReturnVol.price * selectedClass.priceMultiplier;
+        //         }
+        //     }
+        
+        //     try {
+        //         const pricingRules = await pricingRuleService.getAllPricingRules();
+        //         console.log('pricingRules', pricingRules);
+                
+        //         if (!pricingRules || pricingRules.length === 0) {
+        //             setTotalPrice(basePrice);
+        //             return;
+        //         }
+        
+        //         // Ajout des tarifs spécifiques pour les enfants et nourrissons
+        //         let totalPrice = basePrice;
+        
+        //         passengers.forEach((passenger) => {
+        //             if (passenger.typePassenger && passenger.typePassenger !== "ADLT") { // Appliquer règles uniquement pour CHD et INF
+        //                 const rule = pricingRules.find(rule =>
+        //                     rule.agencyVolId === formData.agencyVolId &&
+        //                     rule.agencyClassId === formData.agencyClassId &&
+        //                     rule.typePassenger === passenger.typePassenger
+        //                 );
+        
+        //                 if (rule) { 
+        //                     totalPrice += rule.price;
+        //                 } else {
+        //                     console.warn(`Aucune règle tarifaire trouvée pour ${passenger.typePassenger}, utilisation du prix standard.`);
+        //                 }
+        //             }
+        //         });
+        
+        //         setTotalPrice(totalPrice);
+        //     } catch (error) {
+        //         console.error("Erreur lors de la récupération des règles de tarification :", error);
+        //         setTotalPrice(basePrice);
+        //     }
+        // };
+        
+        
+        // Recalculer le prix lorsque certains champs du formulaire changent
+        useEffect(() => {
+            handlePriceCalculation();
+        }, [formData.agencyClassId, formData.returnVolId, formData.agencyVolId, formData.tripType, passengers]); 
+        
+        const handleReturnVolSearch = (value) => {
+            setReturnVolSearch(value);
+        
+            if (value.trim() === '') {
+                setFilteredReturnVols([]);
+                setShowReturnVolSuggestions(false);
+                return;
+            }
+        
+            const filtered = vols.filter((vol) =>
+                (vol.flight?.name?.toLowerCase() || '').includes(value.toLowerCase()) // Évite les erreurs si `flight` est `undefined`
+            );
+        
+            setFilteredReturnVols(filtered);
+            setShowReturnVolSuggestions(filtered.length > 0);
+        };
+        
       // destination search
       const handleStartDestinationSearch = async (search) => {
         setStartDestinationSearch(search);
@@ -193,30 +270,83 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
         }
       };
       
-    const handlePriceCalculation = () => {
-        const selectedVol = vols.find((v) => v.id === formData.volId);
-        const selectedClass = classes.find((cls) => cls.id === formData.classId);
+//     const handlePriceCalculation = () => {
+//         const selectedVol = vols.find((v) => v.id === formData.agencyVolId);
+//         // const selectedClass = classes.find((cls) => cls.id === formData.agencyClassId);
+//         const selectedClass = Array.isArray(classes) ? classes.find((cls) => cls.id === formData.agencyClassId) : null;
+//  console.log('selectedClass',selectedClass)
 
-        if (!selectedVol || !selectedClass) {
-            setTotalPrice(0);
-            return;
-        }
+//         if (!selectedVol || !selectedClass) {
+//             setTotalPrice(0);
+//             return;
+//         }
 
-        let price = selectedVol.prix * selectedClass.priceMultiplier;
+//         let price = selectedVol.price * selectedClass.priceMultiplier;
 
-        if (formData.tripType === "round-trip") {
-            const selectedReturnVol = vols.find((v) => v.id === formData.returnVolId);
-            if (selectedReturnVol) {
-                price += selectedReturnVol.prix * selectedClass.priceMultiplier;
-            }
-        }
+//         if (formData.tripType === "round-trip") {
+//             const selectedReturnVol = vols.find((v) => v.id === formData.returnVolId);
+//             if (selectedReturnVol) {
+//                 price += selectedReturnVol.price * selectedClass.priceMultiplier;
+//             }
+//         }
 
-        setTotalPrice(price);
-    };
-
+//         setTotalPrice(price);
+//     };
+  const handlePriceCalculation = async () => {
+              const selectedVol = vols.find((v) => v.id === formData.agencyVolId);
+              const selectedClass = Array.isArray(classes) ? classes.find((cls) => cls.id === formData.agencyClassId) : null;
+          
+              if (!selectedVol || !selectedClass) {
+                  setTotalPrice(0);
+                  return;
+              }
+          
+              let basePrice = selectedVol.price * selectedClass.priceMultiplier;
+          
+              if (formData.tripType === "round-trip") {
+                  const selectedReturnVol = vols.find((v) => v.id === formData.returnVolId);
+                  if (selectedReturnVol) {
+                      basePrice += selectedReturnVol.price * selectedClass.priceMultiplier;
+                  }
+              }
+          
+              try {
+                  const pricingRules = await pricingRuleService.getAllPricingRules();
+                  console.log('pricingRules', pricingRules);
+                  
+                  if (!pricingRules || pricingRules.length === 0) {
+                      setTotalPrice(basePrice);
+                      return;
+                  }
+          
+                  // Ajout des tarifs spécifiques pour les enfants et nourrissons
+                  let totalPrice = basePrice;
+          
+                  passengers.forEach((passenger) => {
+                      if (passenger.typePassenger && passenger.typePassenger !== "ADLT") { // Appliquer règles uniquement pour CHD et INF
+                          const rule = pricingRules.find(rule =>
+                              rule.agencyVolId === formData.agencyVolId &&
+                              rule.agencyClassId === formData.agencyClassId &&
+                              rule.typePassenger === passenger.typePassenger
+                          );
+          
+                          if (rule) { 
+                              totalPrice += rule.price;
+                          } else {
+                              console.warn(`Aucune règle tarifaire trouvée pour ${passenger.typePassenger}, utilisation du prix standard.`);
+                          }
+                      }
+                  });
+          
+                  setTotalPrice(totalPrice);
+              } catch (error) {
+                  console.error("Erreur lors de la récupération des règles de tarification :", error);
+                  setTotalPrice(basePrice);
+              }
+          };
     useEffect(() => {
         handlePriceCalculation();
-    }, [formData.volId, formData.returnVolId, formData.classId, formData.tripType]);
+    }, [formData.agencyClassId, formData.returnVolId, formData.agencyVolId, formData.tripType]);
 
     const fetchDestinations = async (search = '') => {
         try {
@@ -285,8 +415,11 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
 
     const fetchClasses = async () => {
         try {
-            const response = await axios.get('/api/classes');
-            setClasses(response.data);
+            const response = await axios.get('http://localhost:5000/api/class-agencies');
+            console.log('classAgency',response.data);
+            setClasses(Array.isArray(response.data) ? response.data : []);
+            // setClasses(response.data);
+
         } catch (err) {
             setError('Failed to fetch classes');
         }
@@ -295,9 +428,10 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
     useEffect(() => {
         const fetchVols = async () => {
             try {
-                const response = await volService.getVols({ search: volSearch });
-                console.log('Vols:',response)
-                setVols(Array.isArray(response) ? response : []);
+                // const response = await volService.getVols({ search: volSearch });
+                const response = await agencyAssociationService.getAllFlightAgencies({ params: { search: volSearch } });
+                console.log('Volsagency:',response.data)
+                setVols(Array.isArray(response.data) ? response.data : []);
             } catch (error) {
                 console.error('Failed to fetch vols:', error.message);
             }
@@ -321,7 +455,7 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
     const getDestinationById = (id) => {
         if (!destinations || !destinations.length) return 'Unknown';
         const destination = destinations.find((item) => item.id === parseInt(id));
-        console.log('destinationOrigin',destination)
+        // console.log('destinationOrigin',destination)
         return destination ? destination.country : 'Unknown';
     };
 
@@ -375,7 +509,8 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                         ...passenger,
                         document: [
                             ...(passenger.document || []),
-                            { documentType: '', documentNumber: '', files: [] },
+                            { documentType: '', documentNumber: '',expirationDate: "",
+            issueDate: "", files: [] },
                         ],
                     };
                 }
@@ -744,6 +879,14 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                     `passengers[${passengerIndex}][documents][${docIndex}][documentNumber]`,
                     doc.documentNumber
                 );
+                reservationData.append(
+                    `passengers[${passengerIndex}][documents][${docIndex}][issueDate]`,
+                    doc.issueDate
+                );
+                reservationData.append(
+                    `passengers[${passengerIndex}][documents][${docIndex}][expirationDate]`,
+                    doc.expirationDate
+                );
         
                 // Vérifiez et attachez les fichiers
                 if (doc.files && doc.files.length > 0) {
@@ -764,15 +907,29 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
     
         try {
             const response = await reservationService.createReservation(reservationData);
-            console.log('Réservation créée avec succès', response.data);
-            setLoading(false);
-        } catch (err) {
-            console.error('Erreur:', err);
-            setError('Une erreur est survenue lors de la création de la réservation.');
-            setLoading(false);
-        }
-    };
+            console.log('✔️ Réservation créée avec succès', response.data);
     
+            setLoading(false);
+            navigate('/customer/dashboard');
+        } catch (err) {
+            setLoading(false);
+    
+            // 🔴 Vérification de la structure de l'erreur
+            if (err.response) {
+                console.error('❌ Erreur backend:', err.response.data);
+                
+                // Récupérer le message d'erreur renvoyé par l'API
+                setError(err.response.data.error || 'Une erreur est survenue.');
+            } else if (err.request) {
+                console.error('❌ Aucun retour du serveur:', err.request);
+                setError('Le serveur ne répond pas. Vérifiez votre connexion.');
+            } else {
+                console.error('❌ Erreur inconnue:', err.message);
+                setError('Une erreur inattendue est survenue.');
+            }
+        }
+    }; 
+    console.log('passengersFields',passengers)
     
     return (
         <div className="container mx-auto px-4 py-8 bg-gradient-to-br from-gray-50 to-gray-200 shadow-md rounded-lg p-6 mb-8 max-w-7xl mx-auto">
@@ -872,56 +1029,80 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                                                 key={cls.id}
                                                 className="p-2 cursor-pointer hover:bg-gray-100 flex items-center gap-2"
                                                 onClick={() => {
-                                                    setFormData((prev) => ({ ...prev, classId: cls.id }));
-                                                    handleInputChange({ target: { name: 'classId', value: cls.id } });
-                                                    setClassSearch(cls.name);
+                                                    setFormData((prev) => ({ ...prev, agencyClassId: cls.id }));
+                                                    handleInputChange({ target: { name: 'agencyClassId', value: cls.id } });
+                                                    setClassSearch(cls.class.name);
                                                     setShowClassSuggestions(false);
                                                 }}
                                             >
                                                 <FontAwesomeIcon icon={faPlane} className="text-red-500" />
-                                                {cls.name} - Multiplier: {cls.priceMultiplier}
+                                                {cls.class.name} - Multiplier: {cls.priceMultiplier}
                                             </li>
                                         ))}
                                     </ul>
                                 )}
                             </div>
 
-                            <div className="relative mb-4">
-                                <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-                                    <FontAwesomeIcon icon={faPlaneDeparture} className="text-green-500" />
-                                    Select Vol
-                                </label>
-                                <input
-                                    type="text"
-                                    value={volSearch}
-                                    onChange={(e) => setVolSearch(e.target.value)}
-                                    onFocus={() => setShowVolSuggestions(volSearch.length > 0)}
-                                    onBlur={() => {
-                                        setTimeout(() => setShowVolSuggestions(false), 150);
-                                    }}
-                                    placeholder="Type vol name..."
-                                    className="block w-full p-2 border border-gray-300 rounded-md"
-                                />
-                                {showVolSuggestions && (
-                                    <ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-md shadow-lg mt-1">
-                                        {vols.map((vol) => (
-                                            <li
-                                                key={vol.id}
-                                                className="p-2 cursor-pointer hover:bg-gray-100 flex items-center gap-2"
-                                                onClick={() => {
-                                                    setFormData((prev) => ({ ...prev, volId: vol.id }));
-                                                    handleInputChange({ target: { name: 'volId', value: vol.id } });
-                                                    setVolSearch(vol.name);
-                                                    setShowVolSuggestions(false);
-                                                }}
-                                            >
-                                                <FontAwesomeIcon icon={faPlaneDeparture} className="text-green-500" />
-                                                 {getCompanyById(vol.companyId)} -{getDestinationById(vol.originId)}- {getDestinationById(vol.destinationId)}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-                            </div>
+                             <div className="relative mb-4">
+      <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
+        <FontAwesomeIcon icon={faPlaneDeparture} className="text-blue-500 text-lg" />
+        Select Flight
+      </label>
+
+      <div className="relative">
+        <input
+          type="text"
+          value={volSearch}
+          onChange={(e) => setVolSearch(e.target.value)}
+          onFocus={() => setShowVolSuggestions(volSearch.length > 0)}
+          onBlur={() => setTimeout(() => setShowVolSuggestions(false), 150)}
+          placeholder="Search for a flight..."
+          className="block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm placeholder-gray-400 transition-all"
+        />
+        <FontAwesomeIcon
+          icon={faSearch}
+          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400"
+        />
+      </div>
+
+      {showVolSuggestions && vols.length > 0 && (
+        <ul className="absolute z-20 w-full bg-white border border-gray-300 rounded-lg shadow-lg mt-1 max-h-60 overflow-y-auto animate-fadeIn">
+          {vols.length > 0 ? (
+            vols.map((vol) => (
+              <li
+                key={vol.id}
+                className="p-3 cursor-pointer hover:bg-blue-50 flex items-center gap-3 transition-all"
+                onClick={() => {
+                  setFormData((prev) => ({ ...prev, agencyVolId: vol.id }));
+                  handleInputChange({ target: { name: 'agencyVolId', value: vol.id } });
+                  setVolSearch(vol.flight.name);
+                  setShowVolSuggestions(false);
+                }}
+              >
+                <FontAwesomeIcon icon={faPlaneDeparture} className="text-blue-500 text-md" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800">
+                    {getCompanyById(vol.flight.companyId)}
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    {getDestinationById(vol.flight.originId)} → {getDestinationById(vol.flight.destinationId)}
+                  </p>
+                  <p className="text-xs text-gray-500 font-semibold">
+                    Depart: {formatDate(vol.departureTime)} → {formatDate(vol.arrivalTime)}
+                  </p>
+                  <p className="text-xs text-gray-350 font-semibold">
+                  Agency : {vol.agency.name} → prix de vol : {vol.price}
+                  </p>
+                </div>
+              </li>
+            ))
+          ) : (
+            <li className="p-3 text-gray-500 text-sm text-center">No flights found</li>
+          )}
+        </ul>
+      )}
+    </div>
+                          
 
                             <div className="mb-4">
                                 <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
@@ -965,12 +1146,12 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                                                     onClick={() => {
                                                         setFormData((prev) => ({ ...prev, returnVolId: vol.id }));
                                                         handleInputChange({ target: { name: 'returnVolId', value: vol.id } });
-                                                        setReturnVolSearch(vol.name);
+                                                        setReturnVolSearch(vol.flight.name);
                                                         setShowReturnVolSuggestions(false);
                                                     }}
                                                 >
                                                     <FontAwesomeIcon icon={faPlane} className="text-purple-500" />
-                                                    {vol.name} - {getCompanyById(vol.companyId)} - {getDestinationById(vol.destinationId)}
+                                                    {vol.flight.name} - {getCompanyById(vol.flight.companyId)} - {getDestinationById(vol.flight.destinationId)}
                                                 </li>
                                             ))}
                                         </ul>
@@ -1083,34 +1264,7 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Document Type</label>
-                                    <select
-                                        name="typeDocument"
-                                        value={formData.typeDocument}
-                                        onChange={handleInputChange}
-                                        required
-                                        className={inputClassName}
-                                    >
-                                        <option value="">Select document type</option>
-                                        <option value="passport">Passport</option>
-                                        <option value="id_card">ID Card</option>
-                                        <option value="driver_license">Driver's License</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Document Number</label>
-                                    <input
-                                        type="text"
-                                        name="numDocument"
-                                        value={formData.numDocument}
-                                        onChange={handleInputChange}
-                                        required
-                                        className={inputClassName}
-                                    />
-                                </div>
-                            </div>
+                            
 
                             <div>
                                 <label className="block text-sm font-medium text-gray-700">Description</label>
@@ -1207,6 +1361,20 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                                             className="border-gray-300 rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 block w-full sm:text-sm p-2"
                                           />
                                         </div>
+                                         {/* Sélection du type de passager */}
+          <div className="mb-4">
+          <label className="block text-sm font-semibold text-gray-700 mb-2">Type of Passenger</label>
+          <select
+            value={passenger.typePassenger}
+            onChange={(e) => handlePassengerChange(index, "typePassenger", e.target.value)}
+            className="border-gray-300 rounded-lg block w-full p-2"
+          >
+            <option value="">Select Type</option>
+            <option value="ADLT">Adult (ADLT)</option>
+            <option value="CHD">Child (CHD)</option>
+            <option value="INF">Infant (INF)</option>
+          </select>
+        </div>
                                       </div>
                                       {/* Documents */}
                                       <div className="mt-6">
@@ -1249,6 +1417,27 @@ const [showEndDestinationSuggestions, setShowEndDestinationSuggestions] = useSta
                                                 placeholder="e.g., 123456789"
                                               />
                                             </div>
+                                            {/* Issue Date */}
+                <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Issue Date</label>
+                <input
+                  type="date"
+                  value={doc.issueDate}
+                  onChange={(e) => handleDocumentChange(index, docIndex, "issueDate", e.target.value)}
+                  className="border-gray-300 rounded-lg block w-full p-2"
+                />
+              </div>
+
+              {/* Expiration Date */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Expiration Date</label>
+                <input
+                  type="date"
+                  value={doc.expirationDate}
+                  onChange={(e) => handleDocumentChange(index, docIndex, "expirationDate", e.target.value)}
+                  className="border-gray-300 rounded-lg block w-full p-2"
+                />
+              </div>
                                             <div>
                                               <label className="block text-sm font-medium text-gray-700 mb-1">
                                                 File

@@ -188,15 +188,15 @@ const ReservationList = () => {
                                                     <div className="font-medium text-gray-900">
                                                     <dd className="mt-1 text-sm text-gray-900">
                                                     {(() => {
-                                                        const destination = getDestinationById(reservation?.vol.destinationId || 'Unknown');
-                                                        return `${destination.name}`
+                                                        const destination = getDestinationById(reservation?.startDestinationId || 'Unknown');
+                                                        return `${destination.country}`
                                                     })()}
                                                 </dd>
                                                     </div>
                                                     <div className="text-gray-500">
                                                        <dd className="mt-1 text-sm text-gray-900">
                                 {(() => {
-                                    const destination = getDestinationById(reservation?.vol.destinationId || 'Unknown');
+                                    const destination = getDestinationById(reservation?.endDestinationId || 'Unknown');
                                     return `${destination.city}, ${destination.country}`;
                                 })()}
                             </dd>

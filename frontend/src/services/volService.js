@@ -15,6 +15,10 @@ export const volService = {
     getVolById: async (id) => {
         return axios.get(`${API_URL}/${id}`, { headers: authHeader() });
     },
+    getVolsByAgency: async () => {
+        const response = await axios.get(`${API_URL}/all`, { headers: authHeader() });
+        return response.data; // Ensure data is returned
+    },
     createVol: async (volData) => {
         return axios.post(`${API_URL}/post`, volData, { headers: authHeader() });
     },

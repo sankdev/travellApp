@@ -20,6 +20,7 @@ const ClassComponent = () => {
     const fetchClasses = async () => {
         try {
             const response = await axios.get('http://localhost:5000/api/classes');
+            console.log('classList',response)
             setClasses(response.data);
         } catch (err) {
             setError('Failed to fetch classes');
@@ -88,38 +89,39 @@ const ClassComponent = () => {
             <h1 className="text-2xl font-bold mb-4">Manage Classes</h1>
             {error && <div className="text-red-500 mb-4">{error}</div>}
             {success && <div className="text-green-500 mb-4">{success}</div>}
-            <form onSubmit={handleSubmit} className="bg-white shadow rounded-lg p-6 mb-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+             {/* Form */}
+            <form onSubmit={handleSubmit} className="bg-white shadow-md rounded-lg p-6 mb-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Name</label>
+                        <label className="block text-sm font-semibold text-gray-700">Name</label>
                         <input
                             type="text"
                             name="name"
                             value={formData.name}
                             onChange={handleChange}
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                            className="w-full px-3 py-2 text-sm font-medium border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                             required
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Status</label>
+                        <label className="block text-sm font-semibold text-gray-700">Status</label>
                         <select
                             name="status"
                             value={formData.status}
                             onChange={handleChange}
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                            className="w-full px-3 py-2 text-sm font-medium border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                         >
                             <option value="active">Active</option>
                             <option value="inactive">Inactive</option>
                         </select>
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Vol</label>
+                        <label className="block text-sm font-semibold text-gray-700">Vol</label>
                         <select
                             name="volId"
                             value={formData.volId}
                             onChange={handleChange}
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                            className="w-full px-3 py-2 text-sm font-medium border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                             required
                         >
                             <option value="">Select Vol</option>
@@ -131,28 +133,27 @@ const ClassComponent = () => {
                         </select>
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700">Price Multiplier</label>
+                        <label className="block text-sm font-semibold text-gray-700">Price Multiplier</label>
                         <input
                             type="number"
                             name="priceMultiplier"
                             value={formData.priceMultiplier}
                             onChange={handleChange}
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                            className="w-full px-3 py-2 text-sm font-medium border border-gray-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                             required
                         />
                     </div>
                 </div>
-                <div>
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className={`w-full px-4 py-2 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md shadow-sm focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${
-                            loading ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                    >
-                        {loading ? 'Saving...' : editMode ? 'Update Class' : 'Create Class'}
-                    </button>
-                </div>
+
+                <button
+                    type="submit"
+                    disabled={loading}
+                    className={`w-md mt-4 px-4 py-2 text-white font-semibold bg-indigo-600 rounded-md shadow-md transition duration-200 ease-in-out transform hover:scale-105 hover:bg-indigo-700 focus:ring-2 focus:ring-offset-2 focus:ring-indigo-400 ${
+                        loading ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                >
+                    {loading ? 'Saving...' : editMode ? 'Update Class' : 'Create Class'}
+                </button>
             </form>
             <div className="bg-white shadow rounded-lg p-6">
                 <h2 className="text-xl font-semibold mb-4">Class List</h2>
@@ -172,7 +173,7 @@ const ClassComponent = () => {
                                 <tr key={classItem.id}>
                                     <td className="px-6 py-4 whitespace-nowrap">{classItem.name}</td>
                                     <td className="px-6 py-4 whitespace-nowrap capitalize">{classItem.status}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap">{classItem.volId}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap">{classItem.Vol?.name}</td>
                                     <td className="px-6 py-4 whitespace-nowrap">{classItem.priceMultiplier}</td>
                                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                         <button

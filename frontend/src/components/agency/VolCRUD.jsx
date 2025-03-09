@@ -39,7 +39,8 @@ const VolCRUD = () => {
 
     const fetchVols = async () => {
         try {
-            const response = await volService.getVols();
+            const response = await volService.getVolsByAgency();
+            console.log('vol',response)
             setVols(Array.isArray(response) ? response : []); // Ensure vols is an array
         } catch (err) {
             setError('Failed to fetch vols');

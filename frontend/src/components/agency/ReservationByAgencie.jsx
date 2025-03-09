@@ -335,7 +335,7 @@ console.log('getCustomerById',allCustomer)
                                                         </div>
                                                         <div className="ml-4">
                                                             <div className="text-sm font-medium text-gray-900">
-                                                                {reservation.vol?.name}-{getCompanyById(reservation.vol?.companyId)}
+                                                            {reservation.vols?.flight.name}
                                                             </div>
                                                             <div className="text-sm text-gray-500">
                                                                 {formatDate(reservation.startAt)} - {formatDate(reservation.endAt)}

@@ -1,22 +1,18 @@
 import {
     faBars,
     faBuilding,
-    faBullhorn,
-    faChalkboardTeacher,
     faClipboardList,
-    faImage,
-    faMapMarkerAlt,
     faPlane,
     faPlusCircle,
     faSignOutAlt,
     faTachometerAlt,
     faTimes,
-    faUserCircle,
+    faUserCircle
 } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React, { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import ModePayment from './ModePayment';
+import DashboardSwitcher from '../pages/DashboardSwitcher';
 
 const AgencyLayout = () => {
     const navigate = useNavigate();
@@ -27,7 +23,7 @@ const AgencyLayout = () => {
     const handleLogout = () => {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
-        navigate('/login');
+        navigate('/');
     };
 
     const handleToggleMenu = (menu) => {
@@ -55,7 +51,7 @@ const AgencyLayout = () => {
                                 alt="Agency Logo"
                             />
                             <div className="ml-4">
-                                <h2 className="text-lg font-semibold">{user?.agency?.name || 'Agency Name'}</h2>
+                                <h2 className="text-lg font-semibold">{user?.name || 'Agency Name'}</h2>
                                 <p className="text-sm text-gray-300">Agency Dashboard</p>
                             </div>
                         </div>
@@ -187,6 +183,20 @@ const AgencyLayout = () => {
                                         Manage Classes
                                     </NavLink>
                                     <NavLink
+                                        to="/agency/Agency-flight"
+                                        className={({ isActive }) =>
+                                            `block px-4 py-2 rounded-lg ${
+                                                isActive
+                                                    ? 'bg-indigo-800 text-white'
+                                                    : 'hover:bg-indigo-600 text-indigo-200'
+                                            }`
+                                        }
+                                        onClick={handleNavLinkClick}
+                                    >
+                                         Vols Agency
+                                    </NavLink>
+                                
+                                    <NavLink
                                         to="/agency/destination"
                                         className={({ isActive }) =>
                                             `block px-4 py-2 rounded-lg ${
@@ -198,6 +208,32 @@ const AgencyLayout = () => {
                                         onClick={handleNavLinkClick}
                                     >
                                         Manage Destinations
+                                    </NavLink>
+                                    <NavLink
+                                        to="/agency/Agency-Class"
+                                        className={({ isActive }) =>
+                                            `block px-4 py-2 rounded-lg ${
+                                                isActive
+                                                    ? 'bg-indigo-800 text-white'
+                                                    : 'hover:bg-indigo-600 text-indigo-200'
+                                            }`
+                                        }
+                                        onClick={handleNavLinkClick}
+                                    >
+                                        Agency Class
+                                    </NavLink>
+                                    <NavLink
+                                        to="/agency/Agency-PricingRules"
+                                        className={({ isActive }) =>
+                                            `block px-4 py-2 rounded-lg ${
+                                                isActive
+                                                    ? 'bg-indigo-800 text-white'
+                                                    : 'hover:bg-indigo-600 text-indigo-200'
+                                            }`
+                                        }
+                                        onClick={handleNavLinkClick}
+                                    >
+                                        Pricing Rules
                                     </NavLink>
                                 </div>
                             )}
@@ -327,6 +363,7 @@ const AgencyLayout = () => {
             {/* Main Content */}
             <div className="flex-1 h-screen overflow-y-auto">
                 <main className="p-6 bg-gray-100 min-h-screen">
+                <DashboardSwitcher/>
                     <Outlet />
                     
                 </main>

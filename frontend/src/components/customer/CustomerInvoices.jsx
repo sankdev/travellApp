@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { invoiceService } from '../../services/invoiceService';
+import { faEye, faFileDownload, faFilter, faMoneyBillWave } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faFileDownload, faMoneyBillWave, faFilter, faEye } from '@fortawesome/free-solid-svg-icons';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { invoiceService } from '../../services/invoiceService';
 
 const CustomerInvoices = () => {
     const [invoices, setInvoices] = useState([]);
@@ -29,7 +29,37 @@ const CustomerInvoices = () => {
             setLoading(false);
         }
     };
-
+     // <Link to={`/customer/invoices/${invoice.id}/pay`} className="text-green-600 hover:text-green-900 flex items-center">
+                                            //     <FontAwesomeIcon icon={faMoneyBillWave} className="mr-2" />
+                                            //     Payer
+                                            // </Link>
+    const handleDownloadInvoice = async (invoiceId, reference) => {
+        try {
+            const response = await invoiceService.downloadInvoice(invoiceId);
+            console.log('responseDownload',response)
+            // Vérifier si la réponse contient des données
+            if (!response.data) {
+                throw new Error("Le fichier est vide ou la requête a échoué.");
+            }
+    
+            // Créer un Blob pour stocker le PDF
+            const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `invoice_${reference}.pdf`); // Nom du fichier
+            document.body.appendChild(link);
+            link.click();
+    
+            // Nettoyer l'URL après le téléchargement
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(link);
+        } catch (error) {
+            console.error("Erreur lors du téléchargement :", error);
+            alert("Échec du téléchargement de la facture. Veuillez réessayer.");
+        }
+    };
+    
+    
     const filteredInvoices = useMemo(() => {
         return invoices.filter(invoice => {
             if (filters.status !== 'all' && invoice.status !== filters.status) return false;
@@ -50,7 +80,7 @@ const CustomerInvoices = () => {
 
     return (
         <div className="container mx-auto px-4 py-8">
-            <h1 className="text-2xl font-bold mb-6 text-center text-gray-800">📜 Mes Factures</h1>
+            <h1 className="text-2xl font-bold mb-6 text-center text-gray-800">📜 My Invoices</h1>
             
             {error && <div className="text-red-500 text-center mb-4">{error}</div>}
             
@@ -150,15 +180,15 @@ const CustomerInvoices = () => {
                                             {new Date(invoice.emissionAt).toLocaleDateString()}
                                         </td>
                                         <td className="px-6 py-4 text-right text-sm font-medium flex space-x-4">
-                                            <button onClick={() => window.open(`/api/invoices/${invoice.id}/download`, '_blank')} 
-                                                className="text-indigo-600 hover:text-indigo-900 flex items-center">
-                                                <FontAwesomeIcon icon={faFileDownload} className="mr-2" />
-                                                Télécharger
-                                            </button>
-                                            <Link to={`/customer/invoices/${invoice.id}/pay`} className="text-green-600 hover:text-green-900 flex items-center">
-                                                <FontAwesomeIcon icon={faMoneyBillWave} className="mr-2" />
-                                                Payer
-                                            </Link>
+                                        <button 
+                                        onClick={() => handleDownloadInvoice(invoice.id, invoice.reference)}
+                                        className="text-indigo-600 hover:text-indigo-900 flex items-center"
+                                    >
+                                        <FontAwesomeIcon icon={faFileDownload} className="mr-2" />
+                                        Download
+                                    </button>
+                                    
+                                           
                                             <Link
                                                 to={`/customer/invoicesDetail/${invoice.id}`} 
                                                 className="text-indigo-600 hover:text-indigo-900 text-sm font-medium flex items-center"

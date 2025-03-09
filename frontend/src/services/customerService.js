@@ -19,10 +19,13 @@ export const customerService = {
     getAllCustomersWithoutRestriction:async () => {
         return axios.get(`${API_URL}/customers/without`, { headers: authHeader() });
     },
-    updateCustomerProfile: async (profileData) => {
-        const headers = authHeader();
-        delete headers["Content-Type"];
-        return axios.put(`${API_URL}/customers/profile`, profileData, { headers: authHeader() });
+    updateCustomerProfile :async (profileData) => {
+        return axios.put(`${API_URL}/customers/profile`, profileData, {
+            headers: {
+                ...authHeader(),
+                "Content-Type": "multipart/form-data",
+            }
+        });
     },
     createCustomer: async (customerData) => {
         const headers = authHeader();

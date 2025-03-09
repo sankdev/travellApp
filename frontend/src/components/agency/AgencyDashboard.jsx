@@ -17,10 +17,12 @@ const AgencyDashboard = () => {
     useEffect(() => {
         const fetchAgencyData = async () => {
             try {
-                const agencyResponse = await agencyService.getAgency(agencyId);
-                setAgencyData(agencyResponse.data);
-                const statsResponse = await agencyService.getAgencyStats();
-                setStats(statsResponse.data);
+                const agencyResponse = await agencyService.getUserAgencies();
+                const ageniciesList = Array.isArray(agencyResponse.data) ? agencyResponse.data : [];
+            console.log('agenciesList',ageniciesList)
+                setAgencyData(ageniciesList.find(agencyData=>agencyData._id===agencyId));
+                // const statsResponse = await agencyService.getAgencyStats();
+                // setStats(statsResponse.data);
             } catch (err) {
                 setError(err.message || 'Failed to load agency data');
             } finally {
@@ -28,14 +30,11 @@ const AgencyDashboard = () => {
             }
         };
 
-        if (agencyId) {
+        
             fetchAgencyData();
-        } else {
-            setError('Agency ID is missing');
-            setLoading(false);
-        }
+        
     }, [agencyId]);
-
+ console.log(agencyData?.agencyImages)
     if (loading) {
         return (
             <div className="flex justify-center items-center h-screen">
@@ -52,16 +51,28 @@ const AgencyDashboard = () => {
         );
     }
 
+    if (!agencyData) {
+        return (
+            <div className="text-center p-4">
+                <div className="text-gray-500">No agency data available</div>
+            </div>
+        );
+    }
+
     return (
         <div className="container mx-auto px-4 py-8">
             {/* En-tête du tableau de bord */}
             <div className="bg-white shadow rounded-lg p-6 mb-8">
                 <div className="flex items-center space-x-4">
-                    <img 
-                        src={agencyData?.logo || '/default-agency-logo.png'} 
-                        alt="Agency Logo"
-                        className="h-20 w-20 rounded-full object-cover"
-                    />
+            {agencyData.logo && <img 
+                src={ `http://localhost:5000${agencyData.logo}` } 
+                alt="Agency Logo"
+                className="h-20 w-20 rounded-full object-cover"
+            />}
+               
+            
+            
+            
                     <div>
                         <h1 className="text-2xl font-bold text-gray-900">{agencyData?.name}</h1>
                         <p className="text-gray-500">{agencyData?.location}</p>
@@ -112,22 +123,29 @@ const AgencyDashboard = () => {
                 </div>
             </div>
 
-            {/* Images de l'agence */}
-            {(agencyData?.images && agencyData.images.length > 0) && (
-                <div className="bg-white shadow rounded-lg p-6 mt-8">
-                    <h2 className="text-xl font-semibold mb-4">Agency Gallery</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {agencyData.images.map((image, index) => (
-                            <img 
-                                key={index}
-                                src={image.url} 
-                                alt={`Agency Image ${index + 1}`}
-                                className="w-full h-48 object-cover rounded-lg"
-                            />
-                        ))}
-                    </div>
-                </div>
-            )}
+          {agencyData?.agencyImages?.length > 0 && (
+    <div className="bg-white shadow rounded-lg p-6 mt-8">
+        <h2 className="text-xl font-semibold mb-4">Agency Gallery</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {agencyData.agencyImages.map((image, index) => {
+                const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+                const imageUrl = image.url.includes('\\') 
+                    ? `${baseUrl}/${image.url.split('\\').slice(-2).join('/')}`
+                    : image.url;
+                
+                return (
+                    <img 
+                        key={index}
+                        src={imageUrl} 
+                        alt={`Agency Image ${index + 1}`}
+                        className="w-full h-48 object-cover rounded-lg"
+                    />
+                );
+            })}
+        </div>
+    </div>
+)}
+
 
             {/* Routes for nested components */}
             <Routes>

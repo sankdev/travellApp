@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { customerService } from '../../services/customerService';
 
 const initialFormState = {
-    firstName: '', lastName: '', email: '', phone: '', address: '', city: '', country: '',birthDate:'',
-    documentType: '', documentNumber: '', birthPlace: '', nationality: '',document:'',
+    firstName: '', lastName: '', email: '', phone: '', address: '', gender: '', profession: '',birthDate:'',
+    typeDocument: '', numDocument: '', birthPlace: '', nationality: '',
 };
 
 const CustomerProfile = () => {
@@ -46,26 +46,48 @@ const CustomerProfile = () => {
         e.preventDefault();
         setLoading(true);
         setMessage({ type: '', text: '' });
-        
+    
         const formDataToSend = new FormData();
-        Object.entries(formData).forEach(([key, value]) => formDataToSend.append(key, value));
-        documentFiles.forEach(file => formDataToSend.append('documents', file));
-
+    
+        // Ajout des champs en évitant les valeurs nulles/vides
+        Object.entries(formData).forEach(([key, value]) => {
+            if (value !== null && value !== undefined && value !== '') {
+                formDataToSend.append(key, value);
+            }
+        });
+    
+        // Ajout des fichiers si disponibles
+        if (documentFiles.length > 0) {
+            documentFiles.forEach(file => formDataToSend.append('documents', file));
+        }
+    
+        // Ajout de l'ID pour la mise à jour
+        if (editMode) {
+            formDataToSend.append('userId', editId);  // Assure-toi que le backend attend bien "userId"
+        }
+    
+        // Vérification des données envoyées
+        console.log('FormDataToSend:', Object.fromEntries(formDataToSend.entries()));
+    
         try {
-            editMode
-                ? await customerService.updateCustomerProfile(editId, formDataToSend)
-                : await customerService.createCustomer(formDataToSend);
+            if (editMode) {
+                await customerService.updateCustomerProfile(formDataToSend);
+                setMessage({ type: 'success', text: 'Profile updated!' });
+            } else {
+                await customerService.createCustomer(formDataToSend);
+                setMessage({ type: 'success', text: 'Profile created!' });
+            }
             
-            setMessage({ type: 'success', text: editMode ? 'Profile updated!' : 'Profile created!' });
             resetForm();
             fetchProfiles();
         } catch (err) {
+            console.error('Error saving profile:', err);
             setMessage({ type: 'error', text: 'Failed to save profile' });
         } finally {
             setLoading(false);
         }
     };
-
+    
     const resetForm = () => {
         setFormData(initialFormState);
         setEditMode(false);
@@ -74,7 +96,20 @@ const CustomerProfile = () => {
     };
 
     const handleEdit = (profile) => {
-        setFormData(profile);
+        setFormData({
+            firstName: profile.firstName || '',
+            lastName: profile.lastName || '',
+            email: profile.email || '',
+            phone: profile.phone || '',
+            address: profile.address || '',
+            gender: profile.gender || '',
+            profession: profile.profession || '',
+            birthDate: profile.birthDate ? profile.birthDate.split('T')[0] : '',
+            typeDocument: profile.typeDocument || '',
+            numDocument: profile.numDocument || '',
+            birthPlace: profile.birthPlace || '',
+            nationality: profile.nationality || '',
+        });
         setEditMode(true);
         setEditId(profile.id);
     };

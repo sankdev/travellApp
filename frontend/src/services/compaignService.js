@@ -14,6 +14,28 @@ export const compaignService = {
             throw error.response?.data || error.message;
         }
     },
+    getCompaignsByUser: async () => {
+        const token = localStorage.getItem('token');
+        try {
+            const response = await axios.get(`${API_URL}/api/campaign/user`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            return response.data;
+        } catch (error) {
+            throw error.response?.data || error.message;
+        }
+    },
+    getActiveCampaigns: async () => {
+        const token = localStorage.getItem('token');
+        try {
+            const response = await axios.get(`${API_URL}/api/campaign/all/active`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            return response.data;
+        } catch (error) {
+            throw error.response?.data || error.message;
+        }
+    },
 
     getCompaignById: async (id) => {
         const token = localStorage.getItem('token');

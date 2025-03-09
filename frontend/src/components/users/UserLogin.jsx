@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { userService } from '../../services/userService';
 
-const UserLogin = () => {
+const UserLogin = ({ onClose }) => {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
     email: '',
@@ -18,6 +18,40 @@ const UserLogin = () => {
     });
   };
 
+  // const handleSubmit = async (e) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   setError('');
+  
+  //   try {
+  //     const response = await userService.login(formData);
+  
+  //     // Vérifier si les données attendues sont présentes
+  //     const user = response?.user;
+  //     const token = response?.token;
+  
+  //     if (!user || !token) {
+  //       throw new Error('Login failed: invalid response from the server');
+  //     }
+  
+  //     // Stocker les informations utilisateur et le token dans localStorage
+  //     localStorage.setItem("user", JSON.stringify(user));
+  //     localStorage.setItem("token", token);
+  
+  //     // Rediriger en fonction du rôle principal
+  //     if (user.roles?.includes("agency")) {
+  //       navigate("/agency/dashboard");
+  //     } else if (user.roles?.includes("customer")) {
+  //       navigate("/customer/dashboard");
+  //     } else {
+  //       navigate("/login");
+  //     }
+  //   } catch (err) {
+  //     setError(err.message || 'An error occurred during login');
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -25,8 +59,6 @@ const UserLogin = () => {
   
     try {
       const response = await userService.login(formData);
-  
-      // Vérifier si les données attendues sont présentes
       const user = response?.user;
       const token = response?.token;
   
@@ -34,12 +66,13 @@ const UserLogin = () => {
         throw new Error('Login failed: invalid response from the server');
       }
   
-      // Stocker les informations utilisateur et le token dans localStorage
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("token", token);
   
-      // Rediriger en fonction du rôle principal
-      if (user.roles?.includes("agency")) {
+      // Gestion des redirections en fonction du rôle
+      if (user.roles?.includes("admin")) {
+        navigate("/admin");
+      } else if (user.roles?.includes("agency")) {
         navigate("/agency/dashboard");
       } else if (user.roles?.includes("customer")) {
         navigate("/customer/dashboard");
@@ -188,6 +221,7 @@ const UserLogin = () => {
               </div>
             </div>
           </div>
+          <button onClick={onClose} className="mt-3 w-full py-2 bg-gray-200 rounded-md">Close</button>
         </div>
       </div>
     </div>

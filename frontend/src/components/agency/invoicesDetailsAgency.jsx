@@ -113,8 +113,7 @@ const InvoiceDetailsAgency = () => {
             <div className="bg-gray-100 p-4 rounded-lg">
                 <h3 className="text-lg font-semibold text-gray-700 mb-2">Résumé Financier</h3>
                 <p className="text-gray-600"><strong>Montant Total :</strong> {amount} FCFA</p>
-                <p className="text-gray-600"><strong>TVA :</strong> {tva}%</p>
-                <p className="text-gray-600"><strong>Total avec Taxes :</strong> {totalWithTax} FCFA</p>
+                
                 <p className="text-gray-600"><strong>Solde restant :</strong> {balance} FCFA</p>
             </div>
         </div>

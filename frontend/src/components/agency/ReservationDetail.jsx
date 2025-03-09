@@ -82,6 +82,7 @@ const ReservationDetailByAgency = () => {
             setLoading(false);
         }
     };
+    console.log('reservation',reservation)
 
     const handleCancelReservation = async () => {
         if (window.confirm('Are you sure you want to cancel this reservation?')) {
@@ -223,44 +224,57 @@ const ReservationDetailByAgency = () => {
 
             {/* Reservation Info */}
             <div className="bg-white shadow rounded-lg overflow-hidden">
-                <div className="px-6 py-5 border-b border-gray-200 flex justify-between items-center">
-                    <h3 className="text-xl font-semibold text-gray-900">{getCompanyById(reservation?.vol.companyId)}</h3>
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(reservation?.status)}`}>
-                        {reservation?.status}
-                    </span>
-                </div>
-                <div className="p-6">
-                    <dl className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-8">
-                        <div>
-                            <dt className="text-sm font-medium text-gray-500">Destination</dt>
-                            <dd className="mt-1 text-sm text-gray-900">
-                                {(() => {
-                                    const destination = getDestinationById(reservation?.vol.destinationId || 'Unknown');
-                                    return `${destination.city}, ${destination.country}`;
-                                })()}
-                            </dd>
-                        </div>
-                        <div>
-                            <dt className="text-sm font-medium text-gray-500">Travel Dates</dt>
-                            <dd className="mt-1 text-sm text-gray-900">
-                                {formatDate(reservation?.startAt)} - {formatDate(reservation?.endAt)}
-                            </dd>
-                        </div>
-                        {reservation?.description && (
-                            <div>
-                                <dt className="text-sm font-medium text-gray-500">Description</dt>
-                                <dd className="mt-1 text-sm text-gray-900">{reservation.description}</dd>
-                            </div>
-                        )}
-                        <div>
-                            <dt className="text-sm font-medium text-gray-500">Document Information</dt>
-                            <dd className="mt-1 text-sm text-gray-900">
-                                {reservation?.typeDocument}: {reservation?.numDocument}
-                            </dd>
-                        </div>
-                    </dl>
-                </div>
+            <div className="px-6 py-5 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-gray-900">{reservation?.vols.flight?.name}</h3>
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(reservation?.status)}`}>
+                    {reservation?.status}
+                </span>
             </div>
+            <div className="p-6">
+                <dl className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-8">
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Destination</dt>
+                        <dd className="mt-1 text-sm text-gray-900">
+                            {(() => {
+                                const destination = getDestinationById(reservation?.
+                                    endDestinationId || 'Unknown');
+                                return `${destination.city}, ${destination.country}`;
+                            })()}
+                        </dd>  
+                    </div>
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Travel Dates</dt>
+                        <dd className="mt-1 text-sm text-gray-900">
+                            {formatDate(reservation?.startAt)} - {formatDate(reservation?.endAt)}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Trip Type</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{reservation?.tripType}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Reservation Price</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{reservation?.totalPrice}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Class</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{reservation?.class?.class.name}</dd>
+                    </div>
+                    {reservation?.description && (
+                        <div>
+                            <dt className="text-sm font-medium text-gray-500">Description</dt>
+                            <dd className="mt-1 text-sm text-gray-900">{reservation.description}</dd>
+                        </div>
+                    )}
+                    <div>
+                        <dt className="text-sm font-medium text-gray-500">Document Information</dt>
+                        <dd className="mt-1 text-sm text-gray-900">
+                            {reservation?.typeDocument}: {reservation?.numDocument}
+                        </dd>
+                    </div>
+                </dl>
+            </div>
+        </div>
 
             {/* Passengers Section */}
             <div className="mt-8 bg-white shadow rounded-lg overflow-hidden">
@@ -277,26 +291,52 @@ const ReservationDetailByAgency = () => {
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                            {reservation?.passengers?.map((passenger, index) => (
-                                <tr key={index}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                        {passenger.firstName} {passenger.lastName}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {passenger.documentType}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {passenger.documentNumber}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
+  {reservation?.passengers?.map((passenger, index) => (
+    <tr key={index}>
+      {/* Nom du passager */}
+      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+        {passenger.firstName} {passenger.lastName}
+      </td>
+
+      {/* Liste des documents du passager */}
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {passenger.Documents?.length > 0 ? (
+          <ul>
+            {passenger.Documents.map((doc, docIndex) => {
+              // Construction de l'URL correcte
+              const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+              const documentUrl = doc.documentPath.startsWith("http")
+                ? doc.documentPath
+                : `${baseUrl}/${doc.documentPath.split('\\').slice(-2).join('/')}`;
+
+              return (
+                <li key={docIndex} className="flex items-center space-x-2">
+                  <span>{doc.typeDocument} ({doc.documentNumber})</span>
+                  <a
+                    href={documentUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline"
+                  >
+                    Télécharger PDF
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <span className="text-gray-400">Aucun document</span>
+        )}
+      </td>
+    </tr>
+  ))}
+</tbody>
                     </table>
                 </div>
             </div>
 
             {/* Additional Information */}
-            {(reservation?.vol.company || reservation?.vol || reservation?.campaign) && (
+            {(reservation?.vols?.flight.company || reservation?.vols || reservation?.campaign) && (
                 <div className="mt-8 bg-white shadow rounded-lg overflow-hidden">
                     <dl className="divide-y divide-gray-200">
                         {reservation?.company && (
@@ -305,11 +345,16 @@ const ReservationDetailByAgency = () => {
                                 <dd className="mt-1 text-sm text-gray-900">{reservation.company.name}</dd>
                             </div>
                         )}
-                        {reservation?.vol && (
+                        {reservation?.vols?.flight && (
                             <div className="px-6 py-5">
                                 <dt className="text-sm font-medium text-gray-500">Flight</dt>
-                                <dd className="mt-1 text-sm text-gray-900">{reservation.vol.name}</dd>
+                                <dd className="mt-1 text-sm text-gray-900">{reservation.vols?.flight.name}</dd>
+                                <dt className="text-sm font-medium text-gray-500">One -Type Price</dt>
+                                <dd className="mt-1 text-sm text-gray-900">  {reservation.vols.price} Fcfa</dd>
+
+                                
                             </div>
+                            
                         )}
                         {reservation?.campaign && (
                             <div className="px-6 py-5">

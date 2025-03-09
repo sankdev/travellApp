@@ -1,14 +1,14 @@
+import { faBuilding, faFileAlt, faPlane, faPlus, faSearch } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import axios from 'axios';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faPlane, faBuilding, faFileAlt, faCircle, faSearch } from '@fortawesome/free-solid-svg-icons';
-import { customerService } from '../../services/customerService';
-import { reservationService } from '../../services/reservationService';
-import { destinationService } from '../../services/destinationService';
-import { companyService } from '../../services/companyService';
-import { volService } from '../../services/volService';
 import { agencyService } from '../../services/agencyService';
+import { companyService } from '../../services/companyService';
+import { customerService } from '../../services/customerService';
+import { destinationService } from '../../services/destinationService';
+import { reservationService } from '../../services/reservationService';
+import { volService } from '../../services/volService';
 
 const CustomerReservations = () => {
     const [reservationsByCustomer, setReservationsByCustomer] = useState([]); // Liste des réservations par client
@@ -53,6 +53,7 @@ const CustomerReservations = () => {
             // Récupérer les réservations pour chaque client
             const reservationsPromises = customersList.map(async (customer) => {
                 const reservationResponse = await reservationService.getReservationsByCustomer(customer.id);
+                console.log('reservationRespNew',reservationResponse)
                 return {
                     customer,
                     reservations: reservationResponse.data || []
@@ -195,11 +196,11 @@ const CustomerReservations = () => {
         console.log('classItem', classItem);
         return classItem ? classItem.name : 'Unknown';
     };
-
+ 
     const getAgeciesById = (id) => {
         if (!agencies || !agencies.length) return 'Unknown';
         const classItem = agencies.find((item) => item.id === parseInt(id));
-        console.log('agencies', classItem);
+        // console.log('agencies', classItem);
         return classItem ? classItem.name : 'Unknown';
     };
 
@@ -230,13 +231,23 @@ console.log('customerDAta',filteredReservations);
                     <FontAwesomeIcon icon={faPlane} className="text-indigo-500 mr-2" />
                     My Reservations
                 </h1>
-                <Link
-                    to="/customer/reservations/new"
-                    className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md shadow-sm"
-                >
-                    <FontAwesomeIcon icon={faSearch} className="mr-2" />
-                    New Reservation
-                </Link>
+                <div className="flex flex-wrap gap-2 sm:space-x-4">
+    <Link
+        to="/customer/reservations/new"
+        className="flex items-center px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md shadow-sm w-full sm:w-auto justify-center"
+    >
+        <FontAwesomeIcon icon={faSearch} className="mr-2" />
+        New Reservation
+    </Link>
+    <Link
+        to="/customer/reservations/campaign"
+        className="flex items-center px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md shadow-sm w-full sm:w-auto justify-center"
+    >
+        <FontAwesomeIcon icon={faPlus} className="mr-2" />
+        Reservation Campaign
+    </Link>
+</div>
+
             </div>
 
             {/* Filtres */}
@@ -302,7 +313,7 @@ console.log('customerDAta',filteredReservations);
                                                         </div>
                                                         <div className="ml-4">
                                                             <div className="text-sm font-medium text-gray-900">
-                                                                {reservation.vol?.name}-{getCompanyById(reservation.vol?.companyId)}
+                                                                {reservation.vols?.flight.name}
                                                             </div>
                                                             <div className="text-sm text-gray-500">
                                                                 {formatDate(reservation.startAt)} - {formatDate(reservation.endAt)}
@@ -332,10 +343,10 @@ console.log('customerDAta',filteredReservations);
                                                             <FontAwesomeIcon icon={faBuilding} className="text-gray-400 mr-1.5" />
                                                             {getAgeciesById(reservation.agencyId)}
                                                         </div>
-                                                        {reservation.vol && (
+                                                        {reservation.vols?.flight && (
                                                             <div className="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
                                                                 <FontAwesomeIcon icon={faPlane} className="text-gray-400 mr-1.5" />
-                                                                Vol: {reservation.vol.name}
+                                                                Vol: {reservation.vols?.flight.name}-Class: {reservation.class?.class?.name}
                                                             </div>
                                                         )}
                                                     </div>
