@@ -1,0 +1,7601 @@
+const Reservation = require('../models/booking');
+ const User = require('../models/userModel');
+ const Vol = require('../models/volModel');
+ const Campaign = require('../models/compaign');
+ const Passenger = require('../models/Passenger');
+ const Agency = require('../models/agenceModel');
+ const Customer = require('../models/customer'); 
+const Invoice = require('../models/invoice');
+ const NotificationService = require('../services/notification.service');
+ const AppError = require('../utils/appError');
+ const catchAsync = require('../utils/catchAsync');
+ const Class=require('../models/classModel');
+ const Document=require('../models/Document');
+ const sequelize=require('../config/bd'); 
+const Destination = require('../models/destinationModel');
+ const AgencyClass=require('../models/agencyClass')
+ const ReservationHistory=require('../models/reservationHistory');
+ const FlightAgency=require('../models/flightAgency');
+ const AgencyFlights=require('../models/flightAgency');
+ const UserAgency=require('../models/userAgencies');
+ const Company = require('../models/Company.js');
+ const Notification=require('../models/notification');
+ const PricingRule=require('../models/pricingRule');
+ const AgencyVol=require('../models/flightAgency');
+ const { Op } = require('sequelize');
+ const fs = require('fs');
+ const path = require('path');
+ const { v4: uuidv4 } = require('uuid'); 
+const mime =require('mime-types')
+
+/**
+ * Crée une réservation de campagne (avec ou sans vol)
+ * Gère automatiquement les deux cas selon que la campagne a un vol associé ou non
+ */
+
+        /**
+ * Crée une réservation pour une campagne
+ * Gère automatiquement les trois cas selon que la campagne a un vol associé ou non
+ */
+exports.createReservationCampaign = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        // ===========================================
+        // 1. RÉCUPÉRATION DES DONNÉES
+        // ===========================================
+        const {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            endAt,
+            returnVolId,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            tripType = 'one-way',
+            description = '',
+            passengers = [],
+            flightSource // 'campaign', 'manual', ou 'none' (important !)
+        } = req.body;
+
+        const startAt = req.body.startAt; // Peut être null
+
+        console.log('📩 Données brutes reçues:', {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            returnVolId,
+            startAt,
+            endAt,
+            tripType,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            flightSource,
+            passengersCount: passengers?.length || 0
+        });
+
+        // ===========================================
+        // 2. VALIDATIONS DE BASE
+        // ===========================================
+
+        // Vérifier l'agence
+        if (!agencyId) {
+            throw new Error('❌ L\'ID de l\'agence est requis.');
+        }
+
+        const agency = await Agency.findByPk(agencyId);
+        if (!agency) {
+            throw new Error('❌ Agence introuvable.');
+        }
+
+        // Vérifier la campagne
+        if (!campaignId) {
+            throw new Error('❌ L\'ID de la campagne est requis.');
+        }
+
+        const campaign = await Campaign.findByPk(campaignId, {
+            include: [
+                { model: Agency, as: 'associatedAgency' },
+                { model: Vol, as: 'vol' }
+            ]
+        });
+
+        if (!campaign) {
+            throw new Error('❌ Campagne introuvable.');
+        }
+
+        // Vérifier que la campagne est active
+        if (campaign.status !== 'active') {
+            throw new Error('❌ Cette campagne n\'est pas active.');
+        }
+
+        // Vérifier que l'agence correspond à la campagne
+        if (parseInt(campaign.agencyId) !== parseInt(agencyId)) {
+            throw new Error('❌ Cette campagne n\'appartient pas à l\'agence sélectionnée.');
+        }
+
+        console.log('✅ Campagne trouvée:', {
+            id: campaign.id,
+            title: campaign.title,
+            agencyId: campaign.agencyId,
+            volId: campaign.volId,
+            hasVol: !!campaign.volId
+        });
+
+        // ===========================================
+        // 3. DÉTERMINATION DU TYPE DE CAMPAGNE
+        // ===========================================
+
+        const campaignHasFlight = !!(campaign.volId);
+        console.log(`🎯 Type de campagne: ${campaignHasFlight ? 'AVEC vol' : 'SANS vol'}`);
+        console.log(`🎯 Source du vol: ${flightSource || 'non spécifié'}`);
+
+        // ===========================================
+        // 4. VALIDATIONS SPÉCIFIQUES SELON LE TYPE
+        // ===========================================
+
+        if (campaignHasFlight) {
+            // CAS 1: Campagne AVEC vol
+            console.log('✈️ Campagne avec vol - Validation allégée');
+
+            // ✅ Pour les campagnes avec vol, les champs de vol sont optionnels
+            // car les informations viennent de la campagne elle-même
+            
+            if (agencyVolId) {
+                // Si un vol est fourni, on le valide
+                const flight = await AgencyVol.findByPk(agencyVolId, {
+                    include: [{ model: Vol, as: 'flight' }]
+                });
+                if (!flight) {
+                    throw new Error('❌ Vol introuvable.');
+                }
+                console.log('✅ Vol validé:', flight.id);
+            }
+
+            if (agencyClassId) {
+                // Si une classe est fournie, on la valide
+                const classExists = await AgencyClass.findByPk(agencyClassId);
+                if (!classExists) {
+                    throw new Error('❌ Classe introuvable.');
+                }
+                
+                // Vérifier que la classe correspond au vol si les deux sont fournis
+                if (agencyVolId && parseInt(classExists.agencyVolId) !== parseInt(agencyVolId)) {
+                    throw new Error('❌ Cette classe n\'est pas associée au vol sélectionné.');
+                }
+                console.log('✅ Classe validée');
+            }
+
+            if (startDestinationId) {
+                const startDest = await Destination.findByPk(startDestinationId);
+                if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+            }
+
+            if (endDestinationId) {
+                const endDest = await Destination.findByPk(endDestinationId);
+                if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+            }
+
+            if (tripType === 'round-trip' && returnVolId) {
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }
+
+            console.log('✅ Campagne avec vol validée');
+
+        } else {
+            // CAS 2 & 3: Campagne SANS vol
+            console.log('ℹ️ Campagne sans vol - Analyse du mode de réservation');
+
+            // Déterminer le mode en fonction de flightSource
+            const effectiveFlightSource = flightSource || 'none';
+            
+            console.log(`📋 Mode de réservation: ${
+                effectiveFlightSource === 'manual' ? 'Avec vol manuel' : 
+                effectiveFlightSource === 'none' ? 'Campagne seule' : 
+                effectiveFlightSource
+            }`);
+
+            if (effectiveFlightSource === 'manual') {
+                // CAS 2: L'utilisateur a choisi d'ajouter un vol manuellement
+                console.log('🛫 Validation pour ajout manuel de vol');
+
+                if (!agencyVolId) {
+                    throw new Error('❌ Veuillez sélectionner un vol aller.');
+                }
+
+                if (!agencyClassId) {
+                    throw new Error('❌ Veuillez sélectionner une classe.');
+                }
+
+                if (!startDestinationId || !endDestinationId) {
+                    throw new Error('❌ Les destinations de départ et d\'arrivée sont requises.');
+                }
+
+                if (!startAt) {
+                    throw new Error('❌ La date de départ est requise.');
+                }
+
+                const flight = await AgencyVol.findByPk(agencyVolId, {
+                    include: [{ model: Vol, as: 'flight' }]
+                });
+
+                if (!flight) {
+                    throw new Error('❌ Vol aller introuvable.');
+                }
+
+                const classExists = await AgencyClass.findByPk(agencyClassId);
+                if (!classExists) {
+                    throw new Error('❌ Classe introuvable.');
+                }
+
+                // Vérifier que la classe correspond au vol
+                if (parseInt(classExists.agencyVolId) !== parseInt(agencyVolId)) {
+                    throw new Error('❌ Cette classe n\'est pas associée au vol sélectionné.');
+                }
+
+                const startDest = await Destination.findByPk(startDestinationId);
+                if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+
+                const endDest = await Destination.findByPk(endDestinationId);
+                if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+
+                if (tripType === 'round-trip') {
+                    if (!returnVolId) {
+                        throw new Error('❌ Pour un voyage aller-retour, veuillez sélectionner un vol retour.');
+                    }
+                    if (!endAt) {
+                        throw new Error('❌ Pour un voyage aller-retour, la date de retour est requise.');
+                    }
+
+                    const returnFlight = await AgencyVol.findByPk(returnVolId);
+                    if (!returnFlight) {
+                        throw new Error('❌ Vol retour introuvable.');
+                    }
+                }
+
+                console.log('✅ Validation manuelle réussie');
+
+            } else {
+                // CAS 3: L'utilisateur n'a pas ajouté de vol - réservation de la campagne seule
+                console.log('📦 Réservation de campagne seule (sans vol)');
+
+                // Seules les informations de la campagne sont nécessaires
+                // Les champs de vol ne sont pas requis
+                // On peut les ignorer ou les réinitialiser à null
+
+                console.log('✅ Campagne seule validée');
+            }
+        }
+
+        // ===========================================
+        // 5. GESTION DU CLIENT
+        // ===========================================
+
+        const user = await User.findByPk(req.user.id);
+        let customer = await Customer.findOne({
+            where: { userId: req.user.id }
+        });
+
+        if (!customer) {
+            console.log('👤 Création d\'un nouveau client pour l\'utilisateur:', req.user.id);
+            customer = await Customer.create({
+                userId: req.user.id,
+                firstName: user?.name,
+                createdBy: req.user.id,
+                status: 'active'
+            }, { transaction: t });
+        }
+
+        // ===========================================
+        // 6. VALIDATION DES PASSAGERS
+        // ===========================================
+
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(passengers)
+                ? passengers
+                : JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers.');
+        }
+
+        if (!parsedPassengers.length) {
+            throw new Error('❌ Au moins un passager est requis.');
+        }
+
+        for (const [index, p] of parsedPassengers.entries()) {
+            if (!p.firstName || !p.firstName.trim()) {
+                throw new Error(`❌ Le prénom du passager ${index + 1} est requis.`);
+            }
+            if (!p.lastName || !p.lastName.trim()) {
+                throw new Error(`❌ Le nom du passager ${index + 1} est requis.`);
+            }
+        }
+
+        // ===========================================
+        // 7. CALCUL DU PRIX
+        // ===========================================
+
+        const basePrice = campaign.price || 0;
+        // Le prix est uniquement basé sur le prix de la campagne × nombre de passagers
+        const totalPrice = basePrice * parsedPassengers.length;
+
+        console.log(`💰 Calcul du prix:`);
+        console.log(`   - Prix campagne: ${basePrice} FCFA`);
+        console.log(`   - Nombre de passagers: ${parsedPassengers.length}`);
+        console.log(`   - Prix total: ${totalPrice} FCFA`);
+
+        // ===========================================
+        // 8. CRÉATION DE LA RÉSERVATION
+        // ===========================================
+         let finalStartAt = null;
+        let finalEndAt = null;
+         // Déterminer la source du vol pour le champ flightSource
+        let finalFlightSource = 'none';
+       // if (campaignHasFlight) {
+         //   finalFlightSource = 'campaign';
+        //} else if (flightSource === 'manual') {
+          //  finalFlightSource = 'manual';
+        //}
+          if (campaignHasFlight) {
+            // CAS 1: Campagne avec vol
+            finalFlightSource = 'campaign';
+            
+            // ✅ Si c'est une campagne avec vol, on utilise les dates de la campagne
+            // Sauf si l'utilisateur a spécifié ses propres dates
+            finalStartAt = startAt ? new Date(startAt) : (campaign.startAt ? new Date(campaign.startAt) : null);
+            finalEndAt = endAt ? new Date(endAt) : (campaign.endAt ? new Date(campaign.endAt) : null);
+            
+            console.log('📅 Dates pour campagne avec vol:', {
+                startAt: finalStartAt,
+                endAt: finalEndAt,
+                source: startAt ? 'utilisateur' : 'campagne'
+            });
+
+        } else if (flightSource === 'manual') {
+            // CAS 2: Campagne sans vol avec ajout manuel
+            finalFlightSource = 'manual';
+            
+            // ✅ Pour l'ajout manuel, on utilise les dates fournies par l'utilisateur
+            finalStartAt = startAt ? new Date(startAt) : null;
+            finalEndAt = endAt ? new Date(endAt) : null;
+            
+            console.log('📅 Dates pour ajout manuel:', {
+                startAt: finalStartAt,
+                endAt: finalEndAt
+            });
+
+        } else {
+            // CAS 3: Campagne sans vol seule
+            finalFlightSource = 'none';
+            
+            // ✅ Pour la campagne seule, on utilise les dates de la campagne
+            finalStartAt = campaign.startAt ? new Date(campaign.startAt) : null;
+            finalEndAt = campaign.endAt ? new Date(campaign.endAt) : null;
+            
+            console.log('📅 Dates pour campagne seule (depuis la campagne):', {
+                startAt: finalStartAt,
+                endAt: finalEndAt
+            });
+        }
+
+        // Construction de l'objet réservation
+        const reservationData = {
+            // Champs obligatoires
+            customerId: customer.id,
+            agencyId: parseInt(agencyId),
+            campaignId: parseInt(campaignId),
+            startAt: finalStartAt,
+            description: description?.trim() || '',
+            status: 'Pending',
+            tripType: tripType,
+            createdBy: req.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+
+            // ✅ CHAMPS OPTIONNELS - selon le cas
+            endAt: finalEndAt,
+            agencyVolId: agencyVolId ? parseInt(agencyVolId) : null,
+            returnVolId: returnVolId ? parseInt(returnVolId) : null,
+            agencyClassId: agencyClassId ? parseInt(agencyClassId) : null,
+            startDestinationId: startDestinationId ? parseInt(startDestinationId) : null,
+            endDestinationId: endDestinationId ? parseInt(endDestinationId) : null,
+
+            // Prix total
+            totalPrice: totalPrice,
+
+            // ✅ Source pour traçabilité
+            flightSource: finalFlightSource
+        };
+
+        // ✅ RÉCUPÉRATION DU volId DEPUIS LA TABLE Vol (si agencyVolId fourni)
+        if (agencyVolId) {
+            try {
+                const flight = await AgencyVol.findByPk(agencyVolId);
+                if (flight && flight.volId) {
+                    reservationData.volId = parseInt(flight.volId);
+                    console.log(`✅ VolId de la table Vol associé: ${flight.volId}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️ Impossible de récupérer le volId: ${error.message}`);
+                // Ne pas bloquer la réservation
+            }
+        }
+
+        // 📝 LOG DE DÉBOGAGE COMPLET
+        console.log('📦 Données complètes envoyées à la DB:', {
+            // Champs obligatoires
+            customerId: reservationData.customerId,
+            agencyId: reservationData.agencyId,
+            campaignId: reservationData.campaignId,
+            startAt: reservationData.startAt,
+            tripType: reservationData.tripType,
+
+            // Tous les champs optionnels
+            endAt: reservationData.endAt,
+            agencyVolId: reservationData.agencyVolId,
+            returnVolId: reservationData.returnVolId,
+            agencyClassId: reservationData.agencyClassId,
+            startDestinationId: reservationData.startDestinationId,
+            endDestinationId: reservationData.endDestinationId,
+            volId: reservationData.volId,
+
+            // Métadonnées
+            flightSource: reservationData.flightSource,
+            totalPrice: reservationData.totalPrice
+        });
+
+        // Création de la réservation
+        const newReservation = await Reservation.create(reservationData, { transaction: t });
+
+        console.log(`✅ Réservation créée: #${newReservation.id}`);
+        console.log(`   - Source: ${reservationData.flightSource}`);
+        console.log(`   - Vol aller: ${newReservation.agencyVolId || 'non spécifié'}`);
+        console.log(`   - Vol retour: ${newReservation.returnVolId || 'non spécifié'}`);
+        console.log(`   - Classe: ${newReservation.agencyClassId || 'non spécifiée'}`);
+        console.log(`   - Destination départ: ${newReservation.startDestinationId || 'non spécifiée'}`);
+        console.log(`   - Destination arrivée: ${newReservation.endDestinationId || 'non spécifiée'}`);
+
+        // ===========================================
+        // 9. CRÉATION DES PASSAGERS ET DOCUMENTS
+        // ===========================================
+
+        for (const [pIndex, passenger] of parsedPassengers.entries()) {
+            console.log(`👤 Création du passager ${pIndex + 1}/${parsedPassengers.length}`);
+
+            const { document: passengerDocs, ...passengerData } = passenger;
+
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                firstName: passenger.firstName?.trim() || '',
+                lastName: passenger.lastName?.trim() || '',
+                gender: passenger.gender || '',
+                birthDate: passenger.birthDate || null,
+                birthPlace: passenger.birthPlace || '',
+                nationality: passenger.nationality || '',
+                profession: passenger.profession || '',
+                typePassenger: passenger.typePassenger || 'ADLT',
+                address: passenger.address || '',
+                phone: passenger.phone || '',
+                email: passenger.email || '',
+                status: 'active'
+            }, { transaction: t });
+
+            console.log(`✅ Passager créé: ${newPassenger.firstName} ${newPassenger.lastName} (ID: ${newPassenger.id})`);
+
+            // Traitement des documents (identique à votre code existant)
+            if (passengerDocs && Array.isArray(passengerDocs) && passengerDocs.length > 0) {
+                // ... (votre code existant pour les documents)
+                console.log(`📄 ${passengerDocs.length} document(s) à traiter`);
+            }
+        }
+
+        // ===========================================
+        // 10. COMMIT DE LA TRANSACTION
+        // ===========================================
+
+        await t.commit();
+        console.log(`💾 Transaction commitée pour la réservation #${newReservation.id}`);
+
+        // ===========================================
+        // 11. RÉPONSE
+        // ===========================================
+
+        res.status(201).json({
+            status: 'success',
+            message: 'Réservation de campagne créée avec succès',
+            data: {
+                reservationId: newReservation.id,
+                campaign: {
+                    id: campaign.id,
+                    title: campaign.title,
+                    hasFlight: campaignHasFlight
+                },
+                flightSource: reservationData.flightSource,
+                flight: {
+                    agencyVolId: reservationData.agencyVolId,
+                    returnVolId: reservationData.returnVolId,
+                    volId: reservationData.volId
+                },
+                destinations: {
+                    start: reservationData.startDestinationId,
+                    end: reservationData.endDestinationId
+                },
+                class: reservationData.agencyClassId,
+                dates: {
+                    start: reservationData.startAt,
+                    end: reservationData.endAt
+                },
+                tripType: reservationData.tripType,
+                passengersCount: parsedPassengers.length,
+                totalPrice: totalPrice,
+                status: 'Pending'
+            }
+        });
+
+    } catch (err) {
+        // ===========================================
+        // GESTION DES ERREURS
+        // ===========================================
+
+        console.error('❌ Erreur lors de la création de la réservation:', err);
+
+        if (t && !t.finished) {
+            await t.rollback();
+            console.log('↩️ Transaction annulée');
+        }
+
+        res.status(400).json({
+            status: 'fail',
+            error: err.message || 'Une erreur est survenue lors de la création de la réservation',
+            ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        });
+    }
+};
+  
+
+exports.createReservationCampaignTous = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        // ===========================================
+        // 1. RÉCUPÉRATION DES DONNÉES
+        // ===========================================
+        const {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            endAt,
+            returnVolId,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            tripType = 'one-way',
+            description = '',
+            passengers = []
+        } = req.body;
+
+        console.log('📩 Données brutes reçues:', {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            returnVolId,
+            startAt: req.body.startAt,
+            endAt,
+            tripType,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            passengersCount: passengers?.length || 0
+        });
+
+        // Date de début obligatoire
+//        const startAt = new Date(req.body.startAt);
+  //      if (isNaN(startAt.getTime())) {
+    //        throw new Error('❌ Date de départ invalide ou manquante.');
+      //  }
+
+        // ===========================================
+        // 2. VALIDATIONS COMMUNES
+        // ===========================================
+
+        // Vérifier l'agence
+        if (!agencyId) {
+            throw new Error('❌ L\'ID de l\'agence est requis.');
+        }
+
+        const agency = await Agency.findByPk(agencyId);
+        if (!agency) {
+            throw new Error('❌ Agence introuvable.');
+        }
+
+        // Vérifier la campagne
+        if (!campaignId) {
+            throw new Error('❌ L\'ID de la campagne est requis.');
+        }
+
+        const campaign = await Campaign.findByPk(campaignId, {
+            include: [
+                { model: Agency, as: 'associatedAgency' },
+                { model: Vol, as: 'vol' }
+            ]
+        });
+
+        if (!campaign) {
+            throw new Error('❌ Campagne introuvable.');
+        }
+
+        // Vérifier que la campagne est active
+        if (campaign.status !== 'active') {
+            throw new Error('❌ Cette campagne n\'est pas active.');
+        }
+
+        // Vérifier que l'agence correspond à la campagne
+        if (parseInt(campaign.agencyId) !== parseInt(agencyId)) {
+            throw new Error('❌ Cette campagne n\'appartient pas à l\'agence sélectionnée.');
+        }
+
+        console.log('✅ Campagne trouvée:', {
+            id: campaign.id,
+            title: campaign.title,
+            agencyId: campaign.agencyId,
+            volId: campaign.volId,
+            hasVol: !!campaign.volId
+        });
+
+        // ===========================================
+        // 3. DÉTERMINATION DU TYPE DE CAMPAGNE
+        // ===========================================
+
+        const campaignHasFlight = !!(campaign.volId);
+        console.log(`🎯 Type de campagne: ${campaignHasFlight ? 'AVEC vol' : 'SANS vol'}`);
+
+        // ===========================================
+        // 4. VALIDATIONS SPÉCIFIQUES SELON LE TYPE
+        // ===========================================
+
+        if (campaignHasFlight) {
+            // CAS 1: Campagne AVEC vol
+            console.log('✈️ Validation des champs pour campagne avec vol');
+
+            if (!agencyVolId) {
+                throw new Error('❌ Cette campagne inclut un vol. L\'ID du vol est requis.');
+            }
+
+            const flight = await AgencyVol.findByPk(agencyVolId, {
+                include: [{ model: Vol, as: 'flight' }]
+            });
+
+            if (!flight) {
+                throw new Error('❌ Vol introuvable.');
+            }
+
+            console.log('✅ Vol trouvé:', {
+                id: flight.id,
+                volId: flight.volId,
+                agencyId: flight.agencyId,
+                flightName: flight.flight?.name
+            });
+
+            // Vérifier les destinations si fournies
+            if (startDestinationId) {
+                const startDest = await Destination.findByPk(startDestinationId);
+                if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+            }
+
+            if (endDestinationId) {
+                const endDest = await Destination.findByPk(endDestinationId);
+                if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+            }
+
+            // Vérifier la classe si fournie
+            if (agencyClassId) {
+                const classExists = await AgencyClass.findByPk(agencyClassId, {
+                    include: [{ model: AgencyVol, as: 'agencyVol' }]
+                });
+
+                if (!classExists) {
+                    throw new Error('❌ Classe introuvable.');
+                }
+
+                if (parseInt(classExists.agencyVolId) !== parseInt(agencyVolId)) {
+                    throw new Error('❌ Cette classe n\'est pas associée au vol sélectionné.');
+                }
+
+                console.log('✅ Classe validée:', classExists.class?.name);
+            }
+
+            // Vérifier le vol retour si aller-retour
+            if (tripType === 'round-trip' && returnVolId) {
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }
+        } else {
+            // CAS 2: Campagne SANS vol - Validation des champs de sélection manuelle
+            console.log('ℹ️ Campagne sans vol - Validation des champs de sélection manuelle');
+
+            if (!agencyVolId) {
+                throw new Error('❌ Pour une campagne sans vol, veuillez sélectionner un vol aller.');
+            }
+
+            if (!agencyClassId) {
+                throw new Error('❌ Pour une campagne sans vol, veuillez sélectionner une classe.');
+            }
+
+            if (!startDestinationId || !endDestinationId) {
+                throw new Error('❌ Les destinations de départ et d\'arrivée sont requises.');
+            }
+
+            const flight = await AgencyVol.findByPk(agencyVolId, {
+                include: [{ model: Vol, as: 'flight' }]
+            });
+
+            if (!flight) {
+                throw new Error('❌ Vol aller introuvable.');
+            }
+
+            const classExists = await AgencyClass.findByPk(agencyClassId);
+            if (!classExists) {
+                throw new Error('❌ Classe introuvable.');
+            }
+
+            const startDest = await Destination.findByPk(startDestinationId);
+            if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+
+            const endDest = await Destination.findByPk(endDestinationId);
+            if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+
+            if (tripType === 'round-trip') {
+                if (!returnVolId) {
+                    throw new Error('❌ Pour un voyage aller-retour, veuillez sélectionner un vol retour.');
+                }
+                if (!endAt) {
+                    throw new Error('❌ Pour un voyage aller-retour, la date de retour est requise.');
+                }
+
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }else {
+        // L'utilisateur n'a pas ajouté de vol - réservation de la campagne seule
+        console.log('📦 Réservation de campagne seule (sans vol)');
+
+        // Seules les informations de la campagne sont nécessaires
+        // Les champs de vol ne sont pas requis
+        // On peut les ignorer ou les réinitialiser à null
+
+        console.log('✅ Campagne seule validée');
+    }
+        }
+
+        // ===========================================
+        // 5. GESTION DU CLIENT
+        // ===========================================
+     const user = await User.findByPk(req.user.id);
+        let customer = await Customer.findOne({
+            where: { userId: req.user.id }
+        });
+
+        if (!customer) {
+            console.log('👤 Création d\'un nouveau client pour l\'utilisateur:', req.user.id);
+            customer = await Customer.create({
+                userId: req.user.id,
+                 firstName: user?.name,
+                createdBy: req.user.id,
+                status: 'active'
+            }, { transaction: t });
+        }
+
+        // ===========================================
+        // 6. VALIDATION DES PASSAGERS
+        // ===========================================
+
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(passengers)
+                ? passengers
+                : JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers.');
+        }
+
+        if (!parsedPassengers.length) {
+            throw new Error('❌ Au moins un passager est requis.');
+        }
+
+        for (const [index, p] of parsedPassengers.entries()) {
+            if (!p.firstName || !p.firstName.trim()) {
+                throw new Error(`❌ Le prénom du passager ${index + 1} est requis.`);
+            }
+            if (!p.lastName || !p.lastName.trim()) {
+                throw new Error(`❌ Le nom du passager ${index + 1} est requis.`);
+            }
+        }
+
+        // ===========================================
+        // 7. CALCUL DU PRIX
+        // ===========================================
+
+        const basePrice = campaign.price || 0;
+        
+        // NOTE: La classe n'affecte PAS le prix
+        // Le prix est uniquement basé sur le prix de la campagne × nombre de passagers
+        const totalPrice = basePrice * parsedPassengers.length;
+
+        console.log(`💰 Calcul du prix:`);
+        console.log(`   - Prix campagne: ${basePrice} FCFA`);
+        console.log(`   - Nombre de passagers: ${parsedPassengers.length}`);
+        console.log(`   - Prix total: ${totalPrice} FCFA`);
+
+        // ===========================================
+        // 8. CRÉATION DE LA RÉSERVATION (CORRIGÉE)
+        // ===========================================
+
+        // ✅ Construction de l'objet réservation avec TOUS les champs
+        const reservationData = {
+            // Champs obligatoires
+            customerId: customer.id,
+            agencyId: parseInt(agencyId),
+            campaignId: parseInt(campaignId),
+            startAt: startAt,
+            description: description?.trim() || '',
+            status: 'Pending',
+            tripType: tripType,
+            createdBy: req.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+
+            // ✅ CHAMPS OPTIONNELS - TOUJOURS AJOUTÉS (même si null)
+            endAt: endAt ? new Date(endAt) : null,
+            agencyVolId: agencyVolId ? parseInt(agencyVolId) : null,
+            returnVolId: returnVolId ? parseInt(returnVolId) : null,
+            agencyClassId: agencyClassId ? parseInt(agencyClassId) : null,
+            startDestinationId: startDestinationId ? parseInt(startDestinationId) : null,
+            endDestinationId: endDestinationId ? parseInt(endDestinationId) : null,
+
+            // Prix total
+            totalPrice: totalPrice,
+
+            // ✅ Source pour traçabilité
+            flightSource: campaignHasFlight ? 'campaign' : 'manual'
+        };
+
+        // ✅ RÉCUPÉRATION DU volId DEPUIS LA TABLE Vol
+        if (agencyVolId) {
+            try {
+                const flight = await AgencyVol.findByPk(agencyVolId);
+                if (flight && flight.volId) {
+                    reservationData.volId = parseInt(flight.volId);
+                    console.log(`✅ VolId de la table Vol associé: ${flight.volId}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️ Impossible de récupérer le volId: ${error.message}`);
+                // Ne pas bloquer la réservation
+            }
+        }
+
+        // 📝 LOG DE DÉBOGAGE COMPLET
+        console.log('📦 Données complètes envoyées à la DB:', {
+            // Champs obligatoires
+            customerId: reservationData.customerId,
+            agencyId: reservationData.agencyId,
+            campaignId: reservationData.campaignId,
+            startAt: reservationData.startAt,
+            tripType: reservationData.tripType,
+
+            // ✅ Tous les champs optionnels
+            endAt: reservationData.endAt,
+            agencyVolId: reservationData.agencyVolId,
+            returnVolId: reservationData.returnVolId,
+            agencyClassId: reservationData.agencyClassId,
+            startDestinationId: reservationData.startDestinationId,
+            endDestinationId: reservationData.endDestinationId,
+            volId: reservationData.volId,
+
+            // Métadonnées
+            flightSource: reservationData.flightSource,
+            totalPrice: reservationData.totalPrice
+        });
+
+        // Création de la réservation
+        const newReservation = await Reservation.create(reservationData, { transaction: t });
+
+        console.log(`✅ Réservation créée: #${newReservation.id}`);
+        console.log(`   - Source: ${reservationData.flightSource}`);
+        console.log(`   - Vol aller: ${newReservation.agencyVolId || 'non spécifié'}`);
+        console.log(`   - Vol retour: ${newReservation.returnVolId || 'non spécifié'}`);
+        console.log(`   - Classe: ${newReservation.agencyClassId || 'non spécifiée'}`);
+        console.log(`   - Destination départ: ${newReservation.startDestinationId || 'non spécifiée'}`);
+        console.log(`   - Destination arrivée: ${newReservation.endDestinationId || 'non spécifiée'}`);
+
+        // ===========================================
+        // 9. CRÉATION DES PASSAGERS ET DOCUMENTS
+        // ===========================================
+
+        for (const [pIndex, passenger] of parsedPassengers.entries()) {
+            console.log(`👤 Création du passager ${pIndex + 1}/${parsedPassengers.length}`);
+
+            const { document: passengerDocs, ...passengerData } = passenger;
+
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                firstName: passenger.firstName?.trim() || '',
+                lastName: passenger.lastName?.trim() || '',
+                gender: passenger.gender || '',
+                birthDate: passenger.birthDate || null,
+                birthPlace: passenger.birthPlace || '',
+                nationality: passenger.nationality || '',
+                profession: passenger.profession || '',
+                typePassenger: passenger.typePassenger || 'ADLT',
+                address: passenger.address || '',
+                phone: passenger.phone || '',
+                email: passenger.email || '',
+                status: 'active'
+            }, { transaction: t });
+
+            console.log(`✅ Passager créé: ${newPassenger.firstName} ${newPassenger.lastName} (ID: ${newPassenger.id})`);
+
+            // Traitement des documents
+            if (passengerDocs && Array.isArray(passengerDocs) && passengerDocs.length > 0) {
+                console.log(`📄 Traitement de ${passengerDocs.length} document(s) pour ce passager`);
+
+                for (const [dIndex, doc] of passengerDocs.entries()) {
+                    console.log(`📄 Création du document ${dIndex + 1}/${passengerDocs.length}`);
+
+                    const files = doc.files || [];
+
+                    for (const file of files) {
+                        let savedFilePath = null;
+                        let mimeType = null;
+                        let fileName = null;
+
+                        if (file && file.base64) {
+                            try {
+                                const matches = file.base64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+
+                                if (!matches || matches.length !== 3) {
+                                    console.warn(`⚠️ Format base64 invalide pour le document ${dIndex + 1}, ignoré`);
+                                    continue;
+                                }
+
+                                mimeType = matches[1];
+                                const base64Data = matches[2];
+                                const buffer = Buffer.from(base64Data, 'base64');
+
+                                let fileExt = 'bin';
+                                if (mimeType) {
+                                    const mimeParts = mimeType.split('/');
+                                    if (mimeParts.length > 1) {
+                                        fileExt = mimeParts[1];
+                                    }
+                                }
+
+                                const timestamp = Date.now();
+                                const uniqueId = uuidv4().substring(0, 8);
+                                fileName = `doc_${newPassenger.id}_${timestamp}_${uniqueId}.${fileExt}`;
+
+                                const uploadDir = path.join(__dirname, '..', 'uploads', 'documents');
+                                if (!fs.existsSync(uploadDir)) {
+                                    fs.mkdirSync(uploadDir, { recursive: true });
+                                }
+
+                                const uploadPath = path.join(uploadDir, fileName);
+                                fs.writeFileSync(uploadPath, buffer);
+                                savedFilePath = path.join('uploads', 'documents', fileName);
+
+                            } catch (fileError) {
+                                console.error(`❌ Erreur fichier:`, fileError.message);
+                            }
+                        }
+
+                        try {
+                            const documentData = {
+                                relatedEntity: 'Passenger',
+                                relatedEntityId: newPassenger.id,
+                                typeDocument: doc.documentType || 'unknown',
+                                documentNumber: doc.documentNumber || 'N/A',
+                                issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                                expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                                documentPath: savedFilePath,
+                                fileType: mimeType,
+                                fileName: fileName,
+                                createdBy: req.user.id,
+                                createdAt: new Date(),
+                                updatedAt: new Date()
+                            };
+
+                            await Document.create(documentData, { transaction: t });
+
+                        } catch (docError) {
+                            console.error(`❌ Erreur document:`, docError.message);
+                        }
+                    }
+
+                    // Document sans fichier
+                    if ((!files || files.length === 0) && (doc.documentNumber || doc.documentType)) {
+                        try {
+                            const documentData = {
+                                relatedEntity: 'Passenger',
+                                relatedEntityId: newPassenger.id,
+                                typeDocument: doc.documentType || 'unknown',
+                                documentNumber: doc.documentNumber || 'N/A',
+                                issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                                expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                                documentPath: null,
+                                fileType: null,
+                                createdBy: req.user.id,
+                                createdAt: new Date(),
+                                updatedAt: new Date()
+                            };
+
+                            await Document.create(documentData, { transaction: t });
+
+                        } catch (docError) {
+                            console.error(`❌ Erreur document sans fichier:`, docError.message);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===========================================
+        // 10. COMMIT DE LA TRANSACTION
+        // ===========================================
+
+        await t.commit();
+        console.log(`💾 Transaction commitée pour la réservation #${newReservation.id}`);
+
+        // ===========================================
+        // 11. RÉPONSE
+        // ===========================================
+
+        res.status(201).json({
+            status: 'success',
+            message: 'Réservation de campagne créée avec succès',
+            data: {
+                reservationId: newReservation.id,
+                campaign: {
+                    id: campaign.id,
+                    title: campaign.title,
+                    hasFlight: campaignHasFlight
+                },
+                flightSource: reservationData.flightSource,
+                flight: {
+                    agencyVolId: reservationData.agencyVolId,
+                    returnVolId: reservationData.returnVolId,
+                    volId: reservationData.volId
+                },
+                destinations: {
+                    start: reservationData.startDestinationId,
+                    end: reservationData.endDestinationId
+                },
+                class: reservationData.agencyClassId,
+                dates: {
+                    start: reservationData.startAt,
+                    end: reservationData.endAt
+                },
+                tripType: reservationData.tripType,
+                passengersCount: parsedPassengers.length,
+                totalPrice: totalPrice,
+                status: 'Pending'
+            }
+        });
+
+    } catch (err) {
+        // ===========================================
+        // GESTION DES ERREURS
+        // ===========================================
+
+        console.error('❌ Erreur lors de la création de la réservation:', err);
+
+        if (t && !t.finished) {
+            await t.rollback();
+            console.log('↩️ Transaction annulée');
+        }
+
+        res.status(400).json({
+            status: 'fail',
+            error: err.message || 'Une erreur est survenue lors de la création de la réservation',
+            ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        });
+    }
+};
+ exports.createReservationCampaignsss = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        // ===========================================
+        // 1. RÉCUPÉRATION DES DONNÉES
+        // ===========================================
+        const {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            endAt,
+            returnVolId,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            tripType = 'one-way',
+            description = '',
+            passengers = []
+        } = req.body;
+           console.log('reservations campaign',req.body)
+        console.log('📩 Données brutes reçues:', {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            startAt: req.body.startAt,
+            tripType,
+            passengersCount: passengers?.length || 0
+        });
+
+        // Date de début obligatoire
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide ou manquante.');
+        }
+
+        // ===========================================
+        // 2. VALIDATIONS COMMUNES
+        // ===========================================
+        
+        // Vérifier l'agence
+        if (!agencyId) {
+            throw new Error('❌ L\'ID de l\'agence est requis.');
+        }
+
+        const agency = await Agency.findByPk(agencyId);
+        if (!agency) {
+            throw new Error('❌ Agence introuvable.');
+        }
+
+        // Vérifier la campagne
+        if (!campaignId) {
+            throw new Error('❌ L\'ID de la campagne est requis.');
+        }
+
+        const campaign = await Campaign.findByPk(campaignId, {
+            include: [
+                { model: Agency, as: 'associatedAgency' },
+                { model: Vol, as: 'vol' }
+            ]
+        });
+        
+        if (!campaign) {
+            throw new Error('❌ Campagne introuvable.');
+        }
+
+        // Vérifier que la campagne est active
+        if (campaign.status !== 'active') {
+            throw new Error('❌ Cette campagne n\'est pas active.');
+        }
+
+        // Vérifier que l'agence correspond à la campagne
+        if (parseInt(campaign.agencyId) !== parseInt(agencyId)) {
+            throw new Error('❌ Cette campagne n\'appartient pas à l\'agence sélectionnée.');
+        }
+
+        console.log('✅ Campagne trouvée:', {
+            id: campaign.id,
+            title: campaign.title,
+            agencyId: campaign.agencyId,
+            volId: campaign.volId,
+            hasVol: !!campaign.volId
+        });
+
+        // ===========================================
+        // 3. DÉTERMINATION DU TYPE DE CAMPAGNE
+        // ===========================================
+        
+        // Une campagne a un vol si elle a un volId
+        const campaignHasFlight = !!(campaign.volId);
+
+        console.log(`🎯 Type de campagne: ${campaignHasFlight ? 'AVEC vol' : 'SANS vol'}`);
+
+        // ===========================================
+        // 4. VALIDATIONS SPÉCIFIQUES SELON LE TYPE
+        // ===========================================
+        
+        if (campaignHasFlight) {
+            // CAS 1: Campagne AVEC vol - Valider les champs obligatoires
+            console.log('✈️ Validation des champs pour campagne avec vol');
+            
+            // Vérifier le vol
+            if (!agencyVolId) {
+                throw new Error('❌ Cette campagne inclut un vol. L\'ID du vol est requis.');
+            }
+
+            // ✅ SIMPLEMENT VÉRIFIER QUE LE VOL EXISTE
+            const flight = await AgencyVol.findByPk(agencyVolId, {
+                include: [
+                    { 
+                        model: Vol, 
+                        as: 'flight',
+                        include: [
+                            { model: Company, as: 'companyVol' },
+                            { model: Destination, as: 'origin' },
+                            { model: Destination, as: 'destination' }
+                        ]
+                    }
+                ]
+            });
+
+            if (!flight) {
+                throw new Error('❌ Vol introuvable.');
+            }
+
+            console.log('✅ Vol trouvé:', {
+                id: flight.id,
+                volId: flight.volId,
+                agencyId: flight.agencyId,
+                flightName: flight.flight?.name
+            });
+
+            // ✅ PAS DE COMPARAISON DES IDS - On accepte le vol tel quel
+
+            // Vérifier les destinations si fournies
+            if (startDestinationId) {
+                const startDest = await Destination.findByPk(startDestinationId);
+                if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+            }
+            
+            if (endDestinationId) {
+                const endDest = await Destination.findByPk(endDestinationId);
+                if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+            }
+
+            // Vérifier la classe si fournie
+            if (agencyClassId) {
+                const classExists = await AgencyClass.findByPk(agencyClassId, {
+                    include: [{ model: AgencyVol, as: 'agencyVol' }]
+                });
+                
+                if (!classExists) {
+                    throw new Error('❌ Classe introuvable.');
+                }
+                
+                // Vérifier que la classe appartient bien à ce vol
+                if (parseInt(classExists.agencyVolId) !== parseInt(agencyVolId)) {
+                    throw new Error('❌ Cette classe n\'est pas associée au vol sélectionné.');
+                }
+
+                console.log('✅ Classe validée:', classExists.class?.name);
+            }
+
+            // Vérifier le vol retour si aller-retour
+            if (tripType === 'round-trip' && returnVolId) {
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }
+        } else {
+            // CAS 2: Campagne SANS vol - Aucune validation des champs vol
+             // CAS 2: Campagne SANS vol - Valider les champs de sélection manuelle
+            console.log('ℹ️ Campagne sans vol - Validation des champs de sélection manuelle');
+
+            // Vérifier que les champs requis sont présents
+            if (!agencyVolId) {
+                throw new Error('❌ Pour une campagne sans vol, veuillez sélectionner un vol aller.');
+            }
+
+            if (!agencyClassId) {
+                throw new Error('❌ Pour une campagne sans vol, veuillez sélectionner une classe.');
+            }
+
+            if (!startDestinationId || !endDestinationId) {
+                throw new Error('❌ Les destinations de départ et d\'arrivée sont requises.');
+            }
+
+            // Vérifier que le vol existe
+            const flight = await AgencyVol.findByPk(agencyVolId, {
+                include: [
+                    {
+                        model: Vol,
+                        as: 'flight',
+                        include: [
+                            { model: Company, as: 'companyVol' },
+                            { model: Destination, as: 'origin' },
+                            { model: Destination, as: 'destination' }
+                        ]
+                    }
+                ]
+            });
+
+            if (!flight) {
+                throw new Error('❌ Vol aller introuvable.');
+            }
+
+            // Vérifier que la classe existe
+            const classExists = await AgencyClass.findByPk(agencyClassId);
+            if (!classExists) {
+                throw new Error('❌ Classe introuvable.');
+            }
+
+            // Vérifier les destinations
+            const startDest = await Destination.findByPk(startDestinationId);
+            if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+
+            const endDest = await Destination.findByPk(endDestinationId);
+            if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+
+            // Vérifier le vol retour si aller-retour
+            if (tripType === 'round-trip') {
+                if (!returnVolId) {
+                    throw new Error('❌ Pour un voyage aller-retour, veuillez sélectionner un vol retour.');
+                }
+                if (!endAt) {
+                    throw new Error('❌ Pour un voyage aller-retour, la date de retour est requise.');
+                }
+
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }
+        }
+
+        // ===========================================
+        // 5. GESTION DU CLIENT
+        // ===========================================
+        
+        let customer = await Customer.findOne({ 
+            where: { userId: req.user.id } 
+        });
+
+        if (!customer) {
+            console.log('👤 Création d\'un nouveau client pour l\'utilisateur:', req.user.id);
+            customer = await Customer.create({
+                userId: req.user.id,
+                createdBy: req.user.id,
+                status: 'active'
+            }, { transaction: t });
+        }
+
+        // ===========================================
+        // 6. VALIDATION DES PASSAGERS
+        // ===========================================
+        
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(passengers)
+                ? passengers
+                : JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers.');
+        }
+
+        if (!parsedPassengers.length) {
+            throw new Error('❌ Au moins un passager est requis.');
+        }
+
+        // Validation basique des passagers
+                // ===========================================
+        // 7. CALCUL DU PRIX
+        // ===========================================
+        
+        // Le prix de base vient de la campagne
+        const basePrice = campaign.price || 0;
+        
+        // Appliquer un multiplicateur si une classe est sélectionnée
+        let finalPricePerPassenger = basePrice;
+        
+        if (campaignHasFlight && agencyClassId) {
+            const selectedClass = await AgencyClass.findByPk(agencyClassId);
+            if (selectedClass && selectedClass.priceMultiplier) {
+                finalPricePerPassenger = basePrice * selectedClass.priceMultiplier;
+                console.log(`💰 Prix avec multiplicateur de classe: ${basePrice} × ${selectedClass.priceMultiplier} = ${finalPricePerPassenger}`);
+            }
+        }
+
+        const totalPrice = finalPricePerPassenger * parsedPassengers.length;
+
+        // ===========================================
+        // 8. CRÉATION DE LA RÉSERVATION
+        // ===========================================
+        
+        // Construction dynamique de l'objet réservation
+        const reservationData = {
+    // Champs obligatoires
+    customerId: customer.id,
+    agencyId: parseInt(agencyId),
+    campaignId: parseInt(campaignId),
+    startAt: startAt,
+    description: description?.trim() || '',
+    status: 'Pending',
+    tripType: tripType,
+    createdBy: req.user.id,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    
+    // ✅ CHAMPS OPTIONNELS - TOUJOURS AJOUTÉS (même si null)
+    endAt: endAt ? new Date(endAt) : null,
+    agencyVolId: agencyVolId ? parseInt(agencyVolId) : null,
+    returnVolId: returnVolId ? parseInt(returnVolId) : null,
+    agencyClassId: agencyClassId ? parseInt(agencyClassId) : null,
+    startDestinationId: startDestinationId ? parseInt(startDestinationId) : null,
+    endDestinationId: endDestinationId ? parseInt(endDestinationId) : null,
+    
+    // Prix total
+    totalPrice: totalPrice
+};
+
+        // Ajouter les champs optionnels UNIQUEMENT s'ils sont fournis
+        //if (campaignHasFlight) {
+            // Pour une campagne avec vol, on ajoute tous les champs vol
+          //  if (agencyVolId) reservationData.agencyVolId = parseInt(agencyVolId);
+        //    if (startDestinationId) reservationData.startDestinationId = parseInt(startDestinationId);
+           // if (endDestinationId) reservationData.endDestinationId = parseInt(endDestinationId);
+         //   if (agencyClassId) reservationData.agencyClassId = parseInt(agencyClassId);
+       //     if (endAt) reservationData.endAt = new Date(endAt);
+       //     if (returnVolId) reservationData.returnVolId = parseInt(returnVolId);
+            
+            // ✅ Récupérer et ajouter le volId de la table Vol
+          //  const flight = await AgencyVol.findByPk(agencyVolId);
+           // if (flight && flight.volId) {
+             //   reservationData.volId = parseInt(flight.volId);
+           //     console.log(`✅ VolId de la table Vol associé: ${flight.volId}`);
+         //   }
+       // } else {
+            // Pour une campagne sans vol, on ignore ces champs même s'ils sont fournis
+         //   console.log('ℹ️ Campagne sans vol - Les champs vol ne seront pas enregistrés');
+       // }
+        if (agencyVolId) {
+            reservationData.agencyVolId = parseInt(agencyVolId);
+            
+            // Récupérer et ajouter le volId de la table Vol
+            const flight = await AgencyVol.findByPk(agencyVolId);
+            if (flight && flight.volId) {
+                reservationData.volId = parseInt(flight.volId);
+                console.log(`✅ VolId de la table Vol associé: ${flight.volId}`);
+            }
+        }
+
+        if (returnVolId) {
+            reservationData.returnVolId = parseInt(returnVolId);
+        }
+
+        if (agencyClassId) {
+            reservationData.agencyClassId = parseInt(agencyClassId);
+        }
+
+        if (startDestinationId) {
+            reservationData.startDestinationId = parseInt(startDestinationId);
+        }
+
+        if (endDestinationId) {
+            reservationData.endDestinationId = parseInt(endDestinationId);
+        }
+
+        // Ajouter une indication sur la source des données
+        reservationData.flightSource = campaignHasFlight ? 'campaign' : 'manual';
+
+        // Création de la réservation
+        const newReservation = await Reservation.create(reservationData, { transaction: t });
+
+        console.log(`✅ Réservation créée: #${newReservation.id} (${campaignHasFlight ? 'avec vol' : 'sans vol'})`);
+
+        // ===========================================
+        // 9. CRÉATION DES PASSAGERS ET DOCUMENTS
+        // ===========================================
+        
+        for (const [pIndex, passenger] of parsedPassengers.entries()) {
+               console.log(`👤 Création du passager ${pIndex + 1}/${parsedPassengers.length}`);
+               const { document: passengerDocs, ...passengerData } = passenger;
+            // Création du passager
+            // Création du passager
+        const newPassenger = await Passenger.create({
+            reservationId: newReservation.id,
+            firstName: passenger.firstName?.trim() || '',
+            lastName: passenger.lastName?.trim() || '',
+            gender: passenger.gender || '',
+            birthDate: passenger.birthDate || null,
+            birthPlace: passenger.birthPlace || '',
+            nationality: passenger.nationality || '',
+            profession: passenger.profession || '',
+            typePassenger: passenger.typePassenger || 'ADLT',
+            address: passenger.address || '',
+            phone: passenger.phone || '',
+            email: passenger.email || '',
+            status: 'active'
+        }, { transaction: t });
+
+        console.log(`✅ Passager créé: ${newPassenger.firstName} ${newPassenger.lastName} (ID: ${newPassenger.id})`);
+
+        // ===========================================
+        // 6. CRÉATION DES DOCUMENTS
+        // ===========================================
+        if (passengerDocs && Array.isArray(passengerDocs) && passengerDocs.length > 0) {
+            console.log(`📄 Traitement de ${passengerDocs.length} document(s) pour ce passager`);
+
+            for (const [dIndex, doc] of passengerDocs.entries()) {
+                console.log(`📄 Création du document ${dIndex + 1}/${passengerDocs.length}`);
+
+                // Récupération des fichiers
+                const files = doc.files || [];
+
+                for (const file of files) {
+                    let savedFilePath = null;
+                    let mimeType = null;
+                    let fileName = null;
+
+                    // Traitement des fichiers base64
+                    if (file && file.base64) {
+                        try {
+                            console.log(`💾 Traitement du fichier base64...`);
+
+                            // Extraction du type MIME et des données
+                            const matches = file.base64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                            
+                            if (!matches || matches.length !== 3) {
+                                console.warn(`⚠️ Format base64 invalide pour le document ${dIndex + 1}, ignoré`);
+                                continue;
+                            }
+
+                            mimeType = matches[1];
+                            const base64Data = matches[2];
+                            const buffer = Buffer.from(base64Data, 'base64');
+
+                            // Déterminer l'extension
+                            let fileExt = 'bin';
+                            if (mimeType) {
+                                const mimeParts = mimeType.split('/');
+                                if (mimeParts.length > 1) {
+                                    fileExt = mimeParts[1];
+                                }
+                            }
+
+                            // Générer un nom de fichier unique
+                            const timestamp = Date.now();
+                            const uniqueId = uuidv4().substring(0, 8);
+                            fileName = `doc_${newPassenger.id}_${timestamp}_${uniqueId}.${fileExt}`;
+
+                            // Créer le dossier uploads s'il n'existe pas
+                            const uploadDir = path.join(__dirname, '..', 'uploads', 'documents');
+                            if (!fs.existsSync(uploadDir)) {
+                                fs.mkdirSync(uploadDir, { recursive: true });
+                                console.log(`📁 Dossier créé: ${uploadDir}`);
+                            }
+
+                            // Sauvegarder le fichier
+                            const uploadPath = path.join(uploadDir, fileName);
+                            fs.writeFileSync(uploadPath, buffer);
+                            savedFilePath = path.join('uploads', 'documents', fileName);
+
+                            console.log(`💾 Fichier sauvegardé: ${fileName} (${buffer.length} bytes)`);
+
+                        } catch (fileError) {
+                            console.error(`❌ Erreur lors du traitement du fichier:`, fileError.message);
+                            console.error(fileError.stack);
+                            // Continuer sans le fichier
+                        }
+                    }
+
+                    // Création du document dans la base de données
+                    try {
+                        const documentData = {
+                            relatedEntity: 'Passenger',
+                            relatedEntityId: newPassenger.id,
+                            typeDocument: doc.documentType || 'unknown',
+                            documentNumber: doc.documentNumber || 'N/A',
+                            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                            documentPath: savedFilePath,
+                            fileType: mimeType,
+                            fileName: fileName,
+                            createdBy: req.user.id,
+                            createdAt: new Date(),
+                            updatedAt: new Date()
+                        };
+
+                        const newDocument = await Document.create(documentData, { transaction: t });
+                        console.log(`✅ Document créé: ${newDocument.id} - ${documentData.typeDocument}`);
+
+                    } catch (docError) {
+                        console.error(`❌ Erreur lors de la création du document:`, docError.message);
+                        // Ne pas bloquer la transaction pour une erreur de document
+                    }
+                }
+
+                // Si pas de fichiers mais des données de document, créer quand même le document
+                if ((!files || files.length === 0) && (doc.documentNumber || doc.documentType)) {
+                    try {
+                        const documentData = {
+                            relatedEntity: 'Passenger',
+                            relatedEntityId: newPassenger.id,
+                            typeDocument: doc.documentType || 'unknown',
+                            documentNumber: doc.documentNumber || 'N/A',
+                            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                            documentPath: null,
+                            fileType: null,
+                            createdBy: req.user.id,
+                            createdAt: new Date(),
+                            updatedAt: new Date()
+                        };
+
+                        const newDocument = await Document.create(documentData, { transaction: t });
+                        console.log(`✅ Document (sans fichier) créé: ${newDocument.id}`);
+
+                    } catch (docError) {
+                        console.error(`❌ Erreur lors de la création du document sans fichier:`, docError.message);
+                    }
+                }
+            }
+        } else {
+            console.log(`ℹ️ Aucun document pour ce passager`);
+        }
+    }
+
+        // ===========================================
+        // 10. COMMIT DE LA TRANSACTION
+        // ===========================================
+        
+        await t.commit();
+        console.log(`💾 Transaction commitée pour la réservation #${newReservation.id}`);
+
+        // ===========================================
+        // 11. NOTIFICATIONS (hors transaction)
+        // ===========================================
+        
+        try {
+            // Récupérer la réservation avec tous ses détails pour la notification
+            const reservationWithDetails = await Reservation.findByPk(newReservation.id, {
+                include: [
+                    {
+                        model: Customer,
+                        as: 'customerReservation',
+                        include: [{ model: User, as: 'user' }]
+                    },
+                    {
+                        model: Agency,
+                        as: 'agencyReservations'
+                    },
+                    {
+                        model: Campaign,
+                        as: 'campaign'
+                    },
+                    {
+                        model: Passenger,
+                        as: 'passengers'
+                    },
+                    {
+                        model: AgencyVol,
+                        as: 'vols',
+                        include: [
+                            {
+                                model: Vol,
+                                as: 'flight',
+                                include: [
+                                    { model: Company, as: 'companyVol' },
+                                    { model: Destination, as: 'origin' },
+                                    { model: Destination, as: 'destination' }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            });
+
+            // Ajouter des informations sur le type de campagne
+            const notificationData = {
+                ...reservationWithDetails.toJSON(),
+                campaignType: campaignHasFlight ? 'with_flight' : 'without_flight',
+                hasFlight: campaignHasFlight,
+                passengersCount: parsedPassengers.length,
+                totalAmount: totalPrice
+            };
+
+            // Envoyer la notification à l'agence
+            if (NotificationService && typeof NotificationService.sendNewReservationToAgency === 'function') {
+                const notificationResult = await NotificationService.sendNewReservationToAgency(notificationData);
+                
+                if (notificationResult && notificationResult.success) {
+                    console.log(`✅ Notification envoyée à l'agence pour la réservation #${newReservation.id}`);
+                } else {
+                    console.warn(`⚠️ Échec de la notification: ${notificationResult?.error || 'Erreur inconnue'}`);
+                }
+            } else {
+                console.warn('⚠️ Service de notification non disponible');
+            }
+        } catch (notificationError) {
+            console.warn(`⚠️ Erreur lors de la notification: ${notificationError.message}`);
+            // Ne pas bloquer la réponse
+        }
+
+        // ===========================================
+        // 12. RÉPONSE
+        // ===========================================
+        res.status(201).json({
+            status: 'success',
+            message: 'Réservation de campagne créée avec succès',
+            data: {
+                reservationId: newReservation.id,
+                campaign: {
+                    id: campaign.id,
+                    title: campaign.title,
+                    hasFlight: campaignHasFlight
+                },
+                flightSource: reservationData.flightSource,
+                flight: {
+                    agencyVolId: reservationData.agencyVolId,
+                    returnVolId: reservationData.returnVolId,
+                    volId: reservationData.volId
+                },
+                destinations: {
+                    start: reservationData.startDestinationId,
+                    end: reservationData.endDestinationId
+                },
+                class: reservationData.agencyClassId,
+                dates: {
+                    start: reservationData.startAt,
+                    end: reservationData.endAt
+                },
+                tripType: reservationData.tripType,
+                passengersCount: parsedPassengers.length,
+                totalPrice: totalPrice,
+                status: 'Pending'
+            }
+        });
+        //res.status(201).json({
+          //  status: 'success',
+           // message: campaignHasFlight 
+         //       ? 'Réservation de campagne avec vol créée avec succès' 
+            //    : 'Réservation de campagne sans vol créée avec succès',
+          //  data: {
+           //     reservationId: newReservation.id,
+            //    campaign: {
+            //        id: campaign.id,
+              //      title: campaign.title,
+            //        type: campaign.type,
+          //          hasFlight: campaignHasFlight
+        //        },
+              //  agency: {
+            //        id: agency.id,
+          //          name: agency.name
+              //  },
+            //    flight: campaignHasFlight ? {
+          //          agencyVolId: agencyVolId,
+        //            volId: reservationData.volId
+             //   } : null,
+           //     passengersCount: parsedPassengers.length,
+         //       pricePerPassenger: finalPricePerPassenger,
+       //         totalPrice: totalPrice,
+     //           status: 'Pending',
+   //             createdAt: newReservation.createdAt
+ //           }
+//        });
+
+    } catch (err) {
+        // ===========================================
+        // GESTION DES ERREURS
+        // ===========================================
+        
+        console.error('❌ Erreur lors de la création de la réservation:', err);
+        
+        // Annulation de la transaction
+        if (t && !t.finished) {
+            await t.rollback();
+            console.log('↩️ Transaction annulée');
+        }
+
+        // Réponse d'erreur
+        res.status(400).json({
+            status: 'fail',
+            error: err.message || 'Une erreur est survenue lors de la création de la réservation',
+            ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        });
+    }
+};     
+                 exports.createReservationCampaignTes = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        // ===========================================
+        // 1. RÉCUPÉRATION DES DONNÉES
+        // ===========================================
+        const {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            endAt,
+            returnVolId,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            tripType = 'one-way',
+            description = '',
+            passengers = []
+        } = req.body;
+
+        // Date de début obligatoire
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide ou manquante.');
+        }
+
+        console.log('📩 Création de réservation - Données reçues:', {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            startAt,
+            tripType,
+            passengersCount: passengers?.length || 0
+        });
+
+        // ===========================================
+        // 2. VALIDATIONS COMMUNES
+        // ===========================================
+        
+        // Vérifier l'agence
+        if (!agencyId) {
+            throw new Error('❌ L\'ID de l\'agence est requis.');
+        }
+
+        const agency = await Agency.findByPk(agencyId);
+        if (!agency) {
+            throw new Error('❌ Agence introuvable.');
+        }
+
+        // Vérifier la campagne
+        if (!campaignId) {
+            throw new Error('❌ L\'ID de la campagne est requis.');
+        }
+
+        const campaign = await Campaign.findByPk(campaignId, {
+            include: [
+                { model: Agency, as: 'associatedAgency' },
+                { model: Vol, as: 'vol' }
+            ]
+        });
+        
+        if (!campaign) {
+            throw new Error('❌ Campagne introuvable.');
+        }
+
+        // Vérifier que la campagne est active
+        if (campaign.status !== 'active') {
+            throw new Error('❌ Cette campagne n\'est pas active.');
+        }
+
+        // Vérifier que l'agence correspond à la campagne
+        if (campaign.agencyId !== parseInt(agencyId)) {
+            throw new Error('❌ Cette campagne n\'appartient pas à l\'agence sélectionnée.');
+        }
+
+        // ===========================================
+        // 3. DÉTERMINATION DU TYPE DE CAMPAGNE
+        // ===========================================
+        
+        // Une campagne a un vol si elle a un volId ou si elle a un vol associé
+        const campaignHasFlight = !!(campaign.volId || campaign.vol);
+
+        console.log(`🎯 Type de campagne: ${campaignHasFlight ? 'AVEC vol' : 'SANS vol'}`);
+
+        // ===========================================
+        // 4. VALIDATIONS SPÉCIFIQUES SELON LE TYPE
+        // ===========================================
+        
+        if (campaignHasFlight) {
+            // CAS 1: Campagne AVEC vol - Valider les champs obligatoires
+            console.log('✈️ Validation des champs pour campagne avec vol');
+            
+            // Vérifier le vol
+            if (!agencyVolId) {
+                throw new Error('❌ Cette campagne inclut un vol. L\'ID du vol est requis.');
+            }
+
+            // Récupérer le vol avec ses relations
+            const flight = await AgencyVol.findByPk(agencyVolId, {
+                include: [
+                    { 
+                        model: Vol, 
+                        as: 'flight',
+                        include: [
+                            { model: Company, as: 'companyVol' },
+                            { model: Destination, as: 'origin' },
+                            { model: Destination, as: 'destination' }
+                        ]
+                    }
+                ]
+            });
+
+            if (!flight) {
+                throw new Error('❌ Vol introuvable.');
+            }
+
+            // ✅ CORRECTION: Vérifier que le vol correspond à celui de la campagne
+            // et non à l'agence (car le vol peut appartenir à une autre agence)
+             // ✅ CORRECTION: Comparaison avec conversion en nombre et en string
+            const campaignVolId = parseInt(campaign.volId);
+            const flightVolId = parseInt(flight.volId);
+            
+            console.log('🔍 Comparaison des IDs:', {
+                campaignVolId,
+                flightVolId,
+                campaignVolIdType: typeof campaignVolId,
+                flightVolIdType: typeof flightVolId,
+                sontEgaux: campaignVolId === flightVolId
+            });
+
+            if (campaignVolId !== flightVolId) {
+                throw new Error(`❌ Ce vol (Vol ID: ${flightVolId}) ne correspond pas au vol de la campagne (Campaign Vol ID: ${campaignVolId}).`);
+            }
+
+            console.log('✅ Vol validé - correspond à la campagne');
+            console.log('✅ Vol validé:', {
+                volId: flight.id,
+                campaignVolId: campaign.volId,
+                flightName: flight.flight?.name,
+                company: flight.flight?.companyVol?.name
+            });
+
+            // Vérifier les destinations
+            if (!startDestinationId || !endDestinationId) {
+                throw new Error('❌ Les destinations de départ et d\'arrivée sont requises pour cette campagne.');
+            }
+
+            // Vérifier que les destinations existent
+            const startDest = await Destination.findByPk(startDestinationId);
+            const endDest = await Destination.findByPk(endDestinationId);
+            
+            if (!startDest) throw new Error('❌ Destination de départ introuvable.');
+            if (!endDest) throw new Error('❌ Destination d\'arrivée introuvable.');
+
+            // Optionnellement, vérifier que les destinations correspondent au vol
+            if (flight.flight) {
+                if (flight.flight.originId !== parseInt(startDestinationId)) {
+                    console.warn(`⚠️ Attention: La destination de départ (${startDestinationId}) ne correspond pas à l'origine du vol (${flight.flight.originId})`);
+                }
+                if (flight.flight.destinationId !== parseInt(endDestinationId)) {
+                    console.warn(`⚠️ Attention: La destination d'arrivée (${endDestinationId}) ne correspond pas à la destination du vol (${flight.flight.destinationId})`);
+                }
+            }
+
+            // Vérifier la classe si fournie
+            if (agencyClassId) {
+                const classExists = await AgencyClass.findByPk(agencyClassId, {
+                    include: [{ model: AgencyVol, as: 'agencyVol' }]
+                });
+                
+                if (!classExists) {
+                    throw new Error('❌ Classe introuvable.');
+                }
+                
+                // Vérifier que la classe appartient bien à ce vol
+                if (classExists.agencyVolId !== parseInt(agencyVolId)) {
+                    throw new Error('❌ Cette classe n\'est pas associée au vol sélectionné.');
+                }
+
+                console.log('✅ Classe validée:', classExists.class?.name);
+            }
+
+            // Vérifier le vol retour si aller-retour
+            if (tripType === 'round-trip' && returnVolId) {
+                const returnFlight = await AgencyVol.findByPk(returnVolId);
+                if (!returnFlight) {
+                    throw new Error('❌ Vol retour introuvable.');
+                }
+            }
+        } else {
+            // CAS 2: Campagne SANS vol - Aucune validation des champs vol
+            console.log('ℹ️ Campagne sans vol - Pas de validation des champs vol');
+            
+            // On peut optionnellement s'assurer que les champs vol sont absents
+            if (agencyVolId || startDestinationId || endDestinationId || agencyClassId) {
+                console.log('⚠️ Des champs de vol ont été fournis mais seront ignorés (campagne sans vol)');
+            }
+        }
+
+        // ===========================================
+        // 5. GESTION DU CLIENT
+        // ===========================================
+        
+        let customer = await Customer.findOne({ 
+            where: { userId: req.user.id } 
+        });
+
+        if (!customer) {
+            console.log('👤 Création d\'un nouveau client pour l\'utilisateur:', req.user.id);
+            customer = await Customer.create({
+                userId: req.user.id,
+                createdBy: req.user.id,
+                status: 'active'
+            }, { transaction: t });
+        }
+
+        // ===========================================
+        // 6. VALIDATION DES PASSAGERS
+        // ===========================================
+        
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(passengers)
+                ? passengers
+                : JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers.');
+        }
+
+        if (!parsedPassengers.length) {
+            throw new Error('❌ Au moins un passager est requis.');
+        }
+
+        // Validation basique des passagers
+        for (const [index, p] of parsedPassengers.entries()) {
+            if (!p.firstName || !p.firstName.trim()) {
+                throw new Error(`❌ Le prénom du passager ${index + 1} est requis.`);
+            }
+            if (!p.lastName || !p.lastName.trim()) {
+                throw new Error(`❌ Le nom du passager ${index + 1} est requis.`);
+            }
+        }
+
+        // ===========================================
+        // 7. CALCUL DU PRIX
+        // ===========================================
+        
+        // Le prix de base vient de la campagne
+        const basePrice = campaign.price || 0;
+        
+        // Appliquer un multiplicateur si une classe est sélectionnée
+        let finalPricePerPassenger = basePrice;
+        
+        if (campaignHasFlight && agencyClassId) {
+            const selectedClass = await AgencyClass.findByPk(agencyClassId);
+            if (selectedClass && selectedClass.priceMultiplier) {
+                finalPricePerPassenger = basePrice * selectedClass.priceMultiplier;
+                console.log(`💰 Prix avec multiplicateur de classe: ${basePrice} × ${selectedClass.priceMultiplier} = ${finalPricePerPassenger}`);
+            }
+        }
+
+        const totalPrice = finalPricePerPassenger * parsedPassengers.length;
+
+        // ===========================================
+        // 8. CRÉATION DE LA RÉSERVATION
+        // ===========================================
+        
+        // Construction dynamique de l'objet réservation
+        const reservationData = {
+            customerId: customer.id,
+            agencyId: parseInt(agencyId),
+            campaignId: parseInt(campaignId),
+            startAt,
+            description: description.trim(),
+            status: 'Pending',
+            tripType,
+            totalPrice: finalPricePerPassenger, // Prix par passager
+            createdBy: req.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+
+        // Ajouter les champs optionnels UNIQUEMENT s'ils sont fournis
+        if (campaignHasFlight) {
+            // Pour une campagne avec vol, on ajoute tous les champs vol
+            if (agencyVolId) reservationData.agencyVolId = parseInt(agencyVolId);
+            if (startDestinationId) reservationData.startDestinationId = parseInt(startDestinationId);
+            if (endDestinationId) reservationData.endDestinationId = parseInt(endDestinationId);
+            if (agencyClassId) reservationData.agencyClassId = parseInt(agencyClassId);
+            if (endAt) reservationData.endAt = new Date(endAt);
+            if (returnVolId) reservationData.returnVolId = parseInt(returnVolId);
+        } else {
+            // Pour une campagne sans vol, on ignore ces champs même s'ils sont fournis
+            console.log('ℹ️ Campagne sans vol - Les champs vol ne seront pas enregistrés');
+        }
+
+        // Création de la réservation
+        const newReservation = await Reservation.create(reservationData, { transaction: t });
+
+        console.log(`✅ Réservation créée: #${newReservation.id} (${campaignHasFlight ? 'avec vol' : 'sans vol'})`);
+
+        // ===========================================
+        // 9. CRÉATION DES PASSAGERS ET DOCUMENTS
+        // ===========================================
+        
+        for (const [pIndex, passenger] of parsedPassengers.entries()) {
+            console.log(`👤 Création du passager ${pIndex + 1}/${parsedPassengers.length}`);
+
+            // Création du passager
+            const passengerData = {
+                reservationId: newReservation.id,
+                firstName: passenger.firstName?.trim() || '',
+                lastName: passenger.lastName?.trim() || '',
+                gender: passenger.gender || '',
+                birthDate: passenger.birthDate || null,
+                birthPlace: passenger.birthPlace || '',
+                nationality: passenger.nationality || '',
+                profession: passenger.profession || '',
+                typePassenger: passenger.typePassenger || 'ADLT',
+                address: passenger.address || '',
+                phone: passenger.phone || '',
+                email: passenger.email || '',
+                status: 'active'
+            };
+
+            const newPassenger = await Passenger.create(passengerData, { transaction: t });
+
+            // Gestion des documents
+            if (passenger.document && Array.isArray(passenger.document)) {
+                for (const [dIndex, doc] of passenger.document.entries()) {
+                    console.log(`📄 Création du document ${dIndex + 1} pour le passager ${pIndex + 1}`);
+
+                    const files = doc.files || [];
+
+                    for (const file of files) {
+                        let savedFilePath = null;
+                        let mimeType = null;
+
+                        // Traitement des fichiers en base64
+                        if (file.base64) {
+                            try {
+                                const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+                                if (!matches || matches.length !== 3) {
+                                    throw new Error('Format base64 invalide');
+                                }
+
+                                mimeType = matches[1];
+                                const buffer = Buffer.from(matches[2], 'base64');
+                                const fileExt = mimeType.split('/')[1] || 'bin';
+                                const filename = `doc_${uuidv4()}.${fileExt}`;
+                                
+                                // Création du dossier uploads s'il n'existe pas
+                                const uploadDir = path.join(__dirname, '..', 'uploads');
+                                if (!fs.existsSync(uploadDir)) {
+                                    fs.mkdirSync(uploadDir, { recursive: true });
+                                }
+
+                                const uploadPath = path.join(uploadDir, filename);
+                                fs.writeFileSync(uploadPath, buffer);
+                                savedFilePath = `uploads/${filename}`;
+                                
+                                console.log(`💾 Fichier sauvegardé: ${filename}`);
+                            } catch (fileError) {
+                                console.error(`❌ Erreur lors du traitement du fichier:`, fileError.message);
+                                // Continuer sans le fichier plutôt que de bloquer toute la réservation
+                            }
+                        }
+
+                        // Création du document dans la base de données
+                        await Document.create({
+                            relatedEntity: 'Passenger',
+                            relatedEntityId: newPassenger.id,
+                            typeDocument: doc.documentType || 'unknown',
+                            documentNumber: doc.documentNumber || 'N/A',
+                            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                            documentPath: savedFilePath,
+                            fileType: mimeType,
+                            createdBy: req.user.id,
+                        }, { transaction: t });
+                    }
+                }
+            }
+        }
+
+        // ===========================================
+        // 10. COMMIT DE LA TRANSACTION
+        // ===========================================
+        
+        await t.commit();
+        console.log(`💾 Transaction commitée pour la réservation #${newReservation.id}`);
+
+        // ===========================================
+        // 11. NOTIFICATIONS (hors transaction)
+        // ===========================================
+        
+        try {
+            // Récupérer la réservation avec tous ses détails pour la notification
+            const reservationWithDetails = await Reservation.findByPk(newReservation.id, {
+                include: [
+                    {
+                        model: Customer,
+                        as: 'customerReservation',
+                        include: [{ model: User, as: 'user' }]
+                    },
+                    {
+                        model: Agency,
+                        as: 'agencyReservations'
+                    },
+                    {
+                        model: Campaign,
+                        as: 'campaign'
+                    },
+                    {
+                        model: Passenger,
+                        as: 'passengers'
+                    }
+                ]
+            });
+
+            // Ajouter des informations sur le type de campagne
+            const notificationData = {
+                ...reservationWithDetails.toJSON(),
+                campaignType: campaignHasFlight ? 'with_flight' : 'without_flight',
+                hasFlight: campaignHasFlight,
+                passengersCount: parsedPassengers.length,
+                totalAmount: totalPrice
+            };
+
+            // Envoyer la notification à l'agence
+            if (NotificationService && typeof NotificationService.sendNewReservationToAgency === 'function') {
+                const notificationResult = await NotificationService.sendNewReservationToAgency(notificationData);
+                
+                if (notificationResult && notificationResult.success) {
+                    console.log(`✅ Notification envoyée à l'agence pour la réservation #${newReservation.id}`);
+                } else {
+                    console.warn(`⚠️ Échec de la notification: ${notificationResult?.error || 'Erreur inconnue'}`);
+                }
+            } else {
+                console.warn('⚠️ Service de notification non disponible');
+            }
+        } catch (notificationError) {
+            console.warn(`⚠️ Erreur lors de la notification: ${notificationError.message}`);
+            // Ne pas bloquer la réponse
+        }
+
+        // ===========================================
+        // 12. RÉPONSE
+        // ===========================================
+        
+        res.status(201).json({
+            status: 'success',
+            message: campaignHasFlight 
+                ? 'Réservation de campagne avec vol créée avec succès' 
+                : 'Réservation de campagne sans vol créée avec succès',
+            data: {
+                reservationId: newReservation.id,
+                campaign: {
+                    id: campaign.id,
+                    title: campaign.title,
+                    type: campaign.type,
+                    hasFlight: campaignHasFlight
+                },
+                agency: {
+                    id: agency.id,
+                    name: agency.name
+                },
+                passengersCount: parsedPassengers.length,
+                pricePerPassenger: finalPricePerPassenger,
+                totalPrice: totalPrice,
+                status: 'Pending',
+                createdAt: newReservation.createdAt,
+                // Informations supplémentaires selon le type
+                ...(campaignHasFlight && {
+                    flight: {
+                        id: agencyVolId,
+                        name: flight?.flight?.name,
+                        company: flight?.flight?.companyVol?.name,
+                        destination: {
+                            from: startDestinationId,
+                            to: endDestinationId
+                        }
+                    },
+                    class: agencyClassId || null
+                })
+            }
+        });
+
+    } catch (err) {
+        // ===========================================
+        // GESTION DES ERREURS
+        // ===========================================
+        
+        console.error('❌ Erreur lors de la création de la réservation:', err);
+        
+        // Annulation de la transaction
+        if (t && !t.finished) {
+            await t.rollback();
+            console.log('↩️ Transaction annulée');
+        }
+
+        // Réponse d'erreur
+        res.status(400).json({
+            status: 'fail',
+            error: err.message || 'Une erreur est survenue lors de la création de la réservation',
+            ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        });
+    }
+};
+exports.createReservationCampaigns = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const {
+            agencyId, campaignId,
+            agencyVolId, endAt, returnVolId,
+            startDestinationId, endDestinationId, agencyClassId,
+            tripType, description
+        } = req.body;
+
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide.');
+        }
+
+        console.log('📩 Données reçues:', JSON.stringify(req.body, null, 2));
+
+        // Récupérer ou créer le client
+        let customer = await Customer.findOne({ where: { userId: req.user.id } });
+        if (!customer) {
+            customer = await Customer.create({
+                userId: req.user.id,
+                createdBy: req.user.id
+            }, { transaction: t });
+        }
+
+        // Vérifier simplement que le vol existe (sans condition de date)
+        const departureVol = await AgencyFlights.findOne({
+            where: { id: agencyVolId }
+        });
+
+        if (!departureVol) {
+            throw new Error('❌ Vol de départ introuvable.');
+        }
+
+        // Récupérer la campagne pour obtenir son prix
+        const campaign = await Campaign.findByPk(campaignId);
+        if (!campaign) {
+            throw new Error('❌ Campagne introuvable');
+        }
+
+        // Utiliser directement le prix de la campagne comme totalPrice
+        const totalPrice = campaign.price;
+
+        // Parser les passagers
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(req.body.passengers)
+                ? req.body.passengers
+                : JSON.parse(req.body.passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers');
+        }
+
+        // Créer la réservation avec le prix de la campagne
+        const newReservation = await Reservation.create({
+            customerId: customer.id,
+            agencyId,
+            campaignId: campaignId || null,
+            startDestinationId,
+            endDestinationId,
+            agencyVolId,
+            startAt,
+            endAt,
+            returnVolId: returnVolId || null,
+            description,
+            status: "Pending",
+            agencyClassId,
+            tripType,
+            totalPrice,
+            createdBy: req.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        }, { transaction: t });
+
+        // Gestion des passagers et documents
+        for (const passenger of parsedPassengers) {
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                ...passenger,
+            }, { transaction: t });
+
+            if (!passenger.document || !Array.isArray(passenger.document)) continue;
+
+            for (const doc of passenger.document) {
+                const files = doc.files || [];
+
+                for (const file of files) {
+                    let savedFilePath = null;
+                    let mimeType = null;
+
+                    if (file.base64) {
+                        const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+                        if (!matches || matches.length !== 3) {
+                            throw new Error('❌ Format base64 invalide.');
+                        }
+                        mimeType = matches[1];
+                        const buffer = Buffer.from(matches[2], 'base64');
+                        const fileExt = mimeType.split('/')[1];
+                        const filename = `document_${uuidv4()}.${fileExt}`;
+                        const uploadPath = path.join(__dirname, '..', 'uploads', filename);
+
+                        fs.writeFileSync(uploadPath, buffer);
+                        savedFilePath = `uploads/${filename}`;
+                    }
+
+                    await Document.create({
+                        relatedEntity: 'Passenger',
+                        relatedEntityId: newPassenger.id,
+                        typeDocument: doc.documentType || 'unknown',
+                        documentNumber: doc.documentNumber || 'N/A',
+                        issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                        expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                        documentPath: savedFilePath,
+                        fileType: mimeType,
+                        createdBy: req.user.id,
+                    }, { transaction: t });
+                }
+            }
+        }
+
+        await t.commit();
+         // 🔔 ENVOI DE LA NOTIFICATION À L'AGENCE (hors transaction)
+        try {
+            const reservationWithDetails = await Reservation.findByPk(newReservation.id, {
+                include: [
+                    {
+                        model: Customer,
+                        as: 'customerReservation',
+                        include: [{ model: User, as: 'user' }]
+                    },
+                    {
+                        model: Agency,
+                        as: 'agencyReservations'
+                    }
+                ]
+            });
+
+            // Utiliser le NotificationService existant
+            const notificationResult = await NotificationService.sendNewReservationToAgency(reservationWithDetails);
+            
+            if (notificationResult.success) {
+                console.log(`✅ Notification envoyée à ${notificationResult.sent}/${notificationResult.recipients} destinataires de l'agence`);
+            } else {
+                console.warn(`⚠️ Échec partiel de la notification à l'agence: ${notificationResult.error}`);
+            }
+        } catch (notificationError) {
+            console.warn(`⚠️ Erreur lors de la notification à l'agence: ${notificationError.message}`);
+            // Ne pas bloquer la réponse en cas d'erreur de notification
+        }
+        res.status(201).json(newReservation);
+
+    } catch (err) {
+        console.error('❌ Erreur lors de la création de la réservation :', err);
+        await t.rollback();
+        res.status(400).json({ status: 'fail', error: err.message });
+    }
+};
+// premier de combine Confirmation Reservation
+exports.combinedConfirmReservation = catchAsync(async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+       // const { reservationId:reqReservationId } = req.body;
+          let reservationId = req.body.reservationId || req.body.reservationId;
+          const userId = req.user.id;
+           //let reservationId = reqReservationId;
+    let invoice = null;
+         console.log('➡️ Demande de confirmation pour réservation ID:', reservationId);
+
+        // Étape 1: Récupération et verrouillage de la réservation seule
+        const reservation = await Reservation.findOne({
+            where: { id: reservationId },
+            transaction: t,
+            lock: t.LOCK.UPDATE
+        });
+
+        if (!reservation) throw new AppError('Réservation introuvable', 404);
+
+        // Étape 2: Chargement des relations (hors transaction pour éviter les locks interdits)
+        reservation.customerReservation = await Customer.findByPk(reservation.customerId, {
+            include: [{ model: User, as: 'user' }]
+        });
+
+        reservation.passengers = await Passenger.findAll({
+            where: { reservationId: reservation.id },
+            include: [{ model: Document, as: 'documents' }]
+        });
+
+        // Étape 3: Si c’est une contre-proposition, récupérer aussi la demande originale
+        if (reservation.originalDemandId) {
+            reservation.originalDemand = await Reservation.findOne({
+                where: { id: reservation.originalDemandId },
+                include: [{
+                    model: Customer,
+                    as: 'customerReservation',
+                    include: [{ model: User, as: 'user' }]
+                }]
+            });
+        }
+
+        // Étape 4: Validation des statuts
+        if (reservation.originalDemandId && reservation.status !== 'proposal_accepted') {
+            throw new AppError('La contre-proposition doit être acceptée avant confirmation', 400);
+        } else if (!reservation.originalDemandId && reservation.status !== 'Pending') {
+            throw new AppError('Réservation déjà traitée ou invalide', 400);
+        }
+
+        // Étape 5: Confirmation logique
+         invoice = await (
+            reservation.originalDemandId
+                ? confirmCounterProposal(reservation, userId, t)
+                : confirmSimpleReservation(reservation, userId, t)
+        );
+
+        console.log('✅ Facture générée :', invoice?.id);
+
+        await t.commit();
+         
+   
+       // Étape 6: Notification client
+           //   try {
+         //   await sendCustomerNotification(reservation, invoice);
+       // } catch (notifError) {
+          //  console.warn('⚠️ Notification échouée :', notifError.message);
+        //}
+            // Étape 6: Notification client avec fallback robuste
+        let notificationSent = false;
+        const currentReservationId = reservation.id; // ✅ Stocker dans une variable locale
+
+        try {
+            // Tentative avec le nouveau service
+            if (NotificationService && typeof NotificationService.sendReservationConfirmationToCustomer === 'function') {
+                const reservationWithDetails = await getReservationDetails(reservation.id);
+                await NotificationService.sendReservationConfirmationToCustomer(reservationWithDetails, invoice);
+                notificationSent = true;
+                console.log(`✅ Nouvelle notification envoyée pour la réservation ${currentReservationId}`);
+            } 
+            // Fallback à l'ancienne méthode
+            else if (typeof sendCustomerNotification === 'function') {
+                await sendCustomerNotification(reservation, invoice);
+                notificationSent = true;
+                console.log(`✅ Ancienne notification envoyée pour la réservation ${currentReservationId}`);
+            } 
+            // Fallback ultime
+            else {
+                console.warn('⚠️ Aucune méthode de notification disponible');
+            }
+        } catch (notificationError) {
+            console.warn(`⚠️ Échec de la notification pour la réservation ${currentReservationId}:`, notificationError.message);
+        }
+
+        // Étape 7: Réponse finale
+        const finalReservation = await getReservationDetails(reservation.id);
+
+        // Étape 7: Réponse finale
+        //const finalReservation = await getReservationDetails(reservation.id);
+        // Étape 7: Réponse
+        res.json({
+            success: true,
+            message: 'Réservation confirmée avec succès',
+            data: {
+                 reservation: await getReservationDetails(reservation.id),
+                invoice
+            }
+        });
+
+    } catch (error) {
+         if (!t.finished) await t.rollback();
+        console.error('❌ Erreur lors de la confirmation de réservation :', error);
+
+        const status = error instanceof AppError ? error.statusCode : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message || 'Erreur interne du serveur',
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+    //try {
+    //const reservationWithDetails = await getReservationDetails(reservation.id);
+    
+    // Notification au client
+   // await NotificationService.sendReservationConfirmationToCustomer(reservationWithDetails, invoice);
+    
+    //console.log(`✅ Confirmation envoyée au client pour la réservation ${reservationId}`);
+//} catch (notificationError) {
+  //  console.warn(`⚠️ Échec de la notification au client: ${notificationError.message}`);
+    // Ne pas bloquer le processus en cas d'erreur de notification
+//}
+   // Étape 6 (hors transaction) : Notification + réponse
+    //try {
+      //  const finalReservation = await getReservationDetails(reservationId);
+  //      await sendCustomerNotification(finalReservation, invoice);
+//
+    //    res.json({
+      //      success: true,
+        //    message: 'Réservation confirmée avec succès',
+          //  data: {
+            //    reservation: finalReservation,
+              //  invoice
+          //  }
+        //});
+   // } catch (notificationError) {
+     //   console.error('⚠️ Notification échouée :', notificationError);
+
+       // res.json({
+         //   success: true,
+           // message: 'Réservation confirmée, mais la notification client a échoué',
+            //data: {
+              //  reservation: await getReservationDetails(reservationId),
+                //invoice
+            //},
+            //warning: 'Notification non envoyée'
+        //});
+    //}
+});
+
+
+// nouveau Code combineComfirmationReservation 
+exports.combinedConfirmReservationnouveau = catchAsync(async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const reservationId = req.body.reservationId;
+        const userId = req.user.id;
+        
+        console.log('➡️ Demande de confirmation pour réservation ID:', reservationId);
+
+        // Étape 1: Récupération et verrouillage de la réservation avec TOUTES les relations
+        const reservation = await Reservation.findOne({
+            where: { id: reservationId },
+            include: [
+                {
+                    model: Customer,
+                    as: 'customerReservation',
+                    include: [{ 
+                        model: User, 
+                        as: 'user',
+                        attributes: ['id', 'email', 'name'] 
+                    }]
+                },
+                {
+                    model: Agency,
+                    as: 'agencyReservations',
+                    attributes: ['id', 'name', 'address', 'phone1']
+                },
+                {
+                    model: FlightAgency,
+                    as: 'vols',
+                    include: [
+                        {
+                            model: Vol,
+                            as: 'flight',
+                            include: [
+                                {
+                                    model: Destination,
+                                    as: 'origin',
+                                    attributes: ['name', 'city']
+                                },
+                                {
+                                    model: Destination,
+                                    as: 'destination',
+                                    attributes: ['name', 'city']
+                                },
+                                {
+                                    model: Company,
+                                    as: 'companyVol',
+                                    attributes: ['name']
+                                }
+                            ]
+                        },
+                      
+                    ]
+                }
+            ],
+            transaction: t,
+            lock: t.LOCK.UPDATE
+        });
+
+        if (!reservation) throw new AppError('Réservation introuvable', 404);
+
+        // Étape 2: Chargement des passagers et documents
+        reservation.passengers = await Passenger.findAll({
+            where: { reservationId: reservation.id },
+            include: [{ model: Document, as: 'documents' }],
+            transaction: t
+        });
+
+        // Étape 3: Si c'est une contre-proposition, récupérer aussi la demande originale
+        if (reservation.originalDemandId) {
+            reservation.originalDemand = await Reservation.findOne({
+                where: { id: reservation.originalDemandId },
+                include: getReservationDetails(reservation.originalDemandId),
+                transaction: t
+            });
+        }
+
+        // Étape 4: Validation des statuts
+        if (reservation.originalDemandId && reservation.status !== 'proposal_accepted') {
+            throw new AppError('La contre-proposition doit être acceptée avant confirmation', 400);
+        } else if (!reservation.originalDemandId && reservation.status !== 'Pending') {
+            throw new AppError('Réservation déjà traitée ou invalide', 400);
+        }
+
+        // Étape 5: Confirmation logique
+        const invoice = await (
+            reservation.originalDemandId
+                ? confirmCounterProposal(reservation, userId, t)
+                : confirmSimpleReservation(reservation, userId, t)
+        );
+
+        console.log('✅ Facture générée :', invoice?.id);
+
+        await t.commit();
+
+        // Étape 6: Récupérer les détails COMPLETS pour l'email
+        const completeReservation = await getReservationDetails(reservation.id);
+        
+        if (!completeReservation) {
+            throw new AppError('Impossible de récupérer les détails complets de la réservation', 500);
+        }
+
+        // Étape 7: Notification client avec vérification des données
+        let notificationSent = false;
+        
+        try {
+            // Vérifier que nous avons toutes les données nécessaires
+            const requiredData = {
+                customerEmail: completeReservation.customerReservation?.user?.email,
+                customerFirstName: completeReservation.customerReservation?.user?.firstName,
+                customerLastName: completeReservation.customerReservation?.user?.lastName,
+                agencyName: completeReservation.agencyReservations?.name,
+                agencyAddress: completeReservation.agencyReservations?.address,
+                flightDetails: completeReservation.flightAgency?.flight,
+                classDetails: completeReservation.flightAgency?.Classes?.find(c => c.id === completeReservation.classId)
+            };
+
+            console.log('📧 Données pour email:', requiredData);
+
+            // Vérifier les données critiques
+            if (!requiredData.customerEmail) {
+                throw new Error('Email client manquant');
+            }
+            
+            if (!requiredData.agencyName) {
+                console.warn('⚠️ Nom d\'agence manquant, utilisation de la valeur par défaut');
+                requiredData.agencyName = 'Notre agence';
+            }
+
+            // Envoyer la notification
+            if (typeof NotificationService?.sendReservationConfirmationToCustomer === 'function') {
+                await NotificationService.sendReservationConfirmationToCustomer({
+                    reservation: completeReservation,
+                    invoice,
+                    customerData: {
+                        email: requiredData.customerEmail,
+                        firstName: requiredData.customerFirstName,
+                        lastName: requiredData.customerLastName
+                    },
+                    agencyData: {
+                        name: requiredData.agencyName,
+                        address: requiredData.agencyAddress
+                    },
+                    flightData: {
+                        name: requiredData.flightDetails?.name,
+                        origin: requiredData.flightDetails?.origin?.name,
+                        destination: requiredData.flightDetails?.destination?.name,
+                        company: requiredData.flightDetails?.companyVol?.name,
+                        class: requiredData.classDetails?.name
+                    }
+                });
+                
+                notificationSent = true;
+                console.log(`✅ Notification envoyée pour la réservation ${reservationId}`);
+            }
+        } catch (notificationError) {
+            console.error(`❌ Erreur de notification pour ${reservationId}:`, notificationError.message);
+            
+            // Fallback: Envoyer un email basique avec les données disponibles
+            try {
+                await sendBasicConfirmationEmail(
+                    completeReservation.customerReservation?.user?.email,
+                    reservationId,
+                    invoice?.reference
+                );
+                console.log(`✅ Email basique envoyé pour ${reservationId}`);
+            } catch (fallbackError) {
+                console.error(`❌ Même le fallback a échoué:`, fallbackError.message);
+            }
+        }
+
+        // Étape 8: Réponse finale
+        res.json({
+            success: true,
+            message: 'Réservation confirmée avec succès',
+            data: {
+                reservation: completeReservation,
+                invoice,
+                notificationSent
+            }
+        });
+
+    } catch (error) {
+        if (!t.finished) await t.rollback();
+        console.error('❌ Erreur lors de la confirmation de réservation:', error);
+
+        const status = error instanceof AppError ? error.statusCode : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message || 'Erreur interne du serveur',
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+});
+// Fonctions helper
+
+async function confirmSimpleReservation(reservation, userId, transaction) {
+    if (!reservation.passengers?.length) {
+        throw new AppError('Aucun passager associé à cette réservation', 400);
+    }
+
+    await reservation.update({
+        status: 'confirmed',
+        confirmedAt: new Date()
+    }, { transaction });
+
+    const invoice = await createInvoice(reservation, userId, transaction);
+
+    await ReservationHistory.create({
+        reservationId: reservation.id,
+        action: 'reservation_confirmed',
+        changedBy: userId,
+        details: { 
+            invoiceReference: invoice.reference, 
+            amount: invoice.amount 
+        }
+    }, { transaction });
+    // ✅ Création de la notification
+    if (reservation.customerReservation?.user?.id) {
+        const customerUserId = reservation.customerReservation.user.id;
+
+        await Notification.create({
+            userId: customerUserId,
+            title: 'Réservation confirmée',
+            message: `Votre réservation a été confirmée avec succès.
+            Référence Facture: ${invoice?.reference || 'N/A'}.`,
+            type: 'success',
+            relatedEntity: 'reservation',
+            relatedEntityId: reservation.id
+        });
+    }
+
+    return invoice;
+}
+
+async function confirmCounterProposal(reservation, userId, transaction) {
+    const original = reservation.originalDemand;
+    const missingDocs = reservation.passengers.filter(p => !p.documents?.length);
+    
+   // if (missingDocs.length > 0) {
+  //      throw new AppError(`${missingDocs.length} passager(s) sans documents valides`, 400);
+//    }
+
+    await Promise.all([
+        reservation.update({ 
+            status: 'confirmed',
+            confirmedAt: new Date() 
+        }, { transaction }),
+        original.update({ 
+            status: 'completed',
+            completedAt: new Date() 
+        }, { transaction })
+    ]);
+
+    const invoice = await createInvoice(reservation, userId, transaction);
+
+    await ReservationHistory.bulkCreate([
+        {
+            reservationId: reservation.id,
+            action: 'proposal_confirmed',
+            changedBy: userId,
+            details: { 
+                invoiceReference: invoice.reference, 
+                amount: invoice.amount 
+            }
+        },
+        {
+            reservationId: original.id,
+            action: 'demand_completed',
+            changedBy: userId
+        }
+    ], { transaction });
+
+        // ✅ Création de la notification
+    if (reservation.customerReservation?.user?.id) {
+        const customerUserId = reservation.customerReservation.user.id;
+
+        await Notification.create({
+            userId: customerUserId,
+            title: 'Contre-proposition confirmée',
+            message: `Votre contre-proposition de réservation a été confirmée.
+            Référence: ${reservation.id}, Facture: ${invoice?.reference || 'N/A'}.`,
+            type: 'success',
+            relatedEntity: 'reservation',
+            relatedEntityId: reservation.id
+        });
+    }
+
+    return invoice;
+}
+
+async function createInvoice(reservation, userId, transaction) {
+    const quantity = reservation.passengers.length;
+    const amount = reservation.totalPrice * quantity;
+
+    return await Invoice.create({
+        reservationId: reservation.id,
+        customerId: reservation.customerReservation.id,
+        agencyId: reservation.agencyId,
+        amount,
+        quantity,
+        balance: amount,
+        reference: `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        emissionAt: new Date(),
+        dueAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 jours
+        status: 'unpaid',
+        createdBy: userId
+    }, { transaction });
+}
+
+
+  // nouveu code de test de sendCustomer Notification
+// Version corrigée de sendCustomerNotification qui utilise NotificationService.sendEmail
+async function sendCustomerNotification(reservation, invoice) {
+    try {
+         console.log('reservation',reservation)  
+        // Vérifier si la réservation a les données nécessaires
+        if (!reservation.customerReservation) {
+            console.warn(`⚠️ Données client manquantes pour la réservation ${reservation.id}`);
+            
+            // Essayer de charger le client si manquant
+            reservation.customerReservation = await Customer.findByPk(reservation.customerId, {
+                include: [{ model: User, as: 'user' }]
+            });
+        }
+
+        if (!reservation.agencyReservations) {
+            console.warn(`⚠️ Données agence manquantes pour la réservation ${reservation.id}`);
+            
+            // Essayer de charger l'agence si manquante
+            reservation.agencyReservations = await Agency.findByPk(reservation.agencyId, {
+                attributes: ['id', 'name', 'address', 'phone1']
+            });
+        }
+
+        if (!reservation.vols && reservation.agencyVolId) {
+            console.warn(`⚠️ Données vol manquantes pour la réservation ${reservation.id}`);
+            
+            // Essayer de charger le vol si manquant
+            reservation.vols = await FlightAgency.findOne({
+                where: { id: reservation.agencyVolId },
+                include: [
+                    {
+                        model: Vol,
+                        as: 'flight',
+                        include: [
+                            {
+                                model: Destination,
+                                as: 'origin',
+                                attributes: ['name', 'city']
+                            },
+                            {
+                                model: Destination,
+                                as: 'destination',
+                                attributes: ['name', 'city']
+                            },
+                            {
+                                model: Company,
+                                as: 'companyVol',
+                                attributes: ['name']
+                            }
+                        ]
+                    }
+                ]
+            });
+        }
+
+        // Récupérer l'email client
+        const customerEmail = reservation.customerReservation?.user?.email || 
+                             reservation.customerReservation?.email;
+        
+        const customerFirstName = reservation.customerReservation?.user?.name?.split(' ')[0] || 
+                                 reservation.customerReservation?.firstName || 
+                                 "Cher";
+        const customerLastName = reservation.customerReservation?.user?.name?.split(' ').slice(1).join(' ') || 
+                                reservation.customerReservation?.lastName || 
+                                "Client";
+        
+        // Récupérer les informations de l'agence
+        const agencyName = reservation.agencyReservations?.name || "Notre agence";
+        const agencyAddress = reservation.agencyReservations?.address || "Adresse non spécifiée";
+        const agencyPhone = reservation.agencyReservations?.phone1 || "Non disponible";
+     //   const agencyEmail = reservation.agencyReservations?.email || process.env.EMAIL_FROM || "contact@agence.com";
+
+        if (!customerEmail) {
+            console.warn(`⚠️ Aucune adresse email client trouvée pour la réservation ${reservation.id}`);
+            return { success: false, error: "Email client manquant" };
+        }
+
+        // Récupérer les détails du vol
+        let flightName = "N/A";
+        let flightOrigin = "N/A";
+        let flightDestination = "N/A";
+        let flightCompany = "N/A";
+        let classDetails = "N/A";
+        let departureTime = "N/A";
+        let arrivalTime = "N/A";
+
+        // Utiliser vols ou flightAgency selon ce qui est disponible
+        const flightData = reservation.vols || reservation.flightAgency;
+        
+        if (flightData) {
+            const flight = flightData.flight;
+            if (flight) {
+                flightName = flight.name || "Vol";
+                flightOrigin = flight.origin?.name || flight.origin?.city || "Départ";
+                flightDestination = flight.destination?.name || flight.destination?.city || "Arrivée";
+                flightCompany = flight.companyVol?.name || "Compagnie";
+            }
+
+            // Récupérer la classe
+            //if (reservation.classId && flightData.Classes) {
+             //   const selectedClass = flightData.Classes.find(cls => cls.id === reservation.classId);
+              //  classDetails = selectedClass ? selectedClass.name : "N/A";
+           // }
+
+            // Horaires
+            if (flightData.departureTime) {
+                departureTime = new Date(flightData.departureTime).toLocaleString('fr-FR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+            if (flightData.arrivalTime) {
+                arrivalTime = new Date(flightData.arrivalTime).toLocaleString('fr-FR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+        }
+
+        // Récupérer les informations de la facture
+        const invoiceReference = invoice?.reference || `INV-${reservation.id}-${Date.now()}`;
+        const invoiceAmount = invoice?.amount || (reservation.totalPrice * (reservation.passengers?.length || 1));
+        const invoiceBalance = invoice?.balance || invoiceAmount;
+        const invoiceEmissionDate = invoice?.emissionAt ? new Date(invoice.emissionAt).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
+        const invoiceDueDate = invoice?.dueAt ? new Date(invoice.dueAt).toLocaleDateString('fr-FR') : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('fr-FR');
+
+        // Informations sur les passagers
+        const passengerCount = reservation.passengers?.length || 1;
+        const passengerList = reservation.passengers?.map(p => 
+            `${p.firstName || ''} ${p.lastName || ''}`.trim()
+        ).filter(Boolean).join(', ') || 'Non spécifié';
+
+        // Générer le sujet et le corps de l'email
+        const emailSubject = `✅ Confirmation de votre réservation #${reservation.id} - ${agencyName}`;
+        const emailBody = generateInvoiceTemplate({
+            // Informations réservation
+            reservationId: reservation.id,
+            reservationDate: new Date(reservation.createdAt || Date.now()).toLocaleDateString('fr-FR'),
+            tripType: reservation.tripType || 'Aller simple',
+            status: 'confirmée',
+            
+            // Informations client
+            customerFirstName,
+            customerLastName,
+            customerEmail,
+            
+            // Informations agence
+            agencyName,
+            agencyAddress,
+            agencyPhone,
+            //agencyEmail,
+            
+            // Informations vol
+            flightName,
+            flightOrigin,
+            flightDestination,
+            flightCompany,
+            flightClass: classDetails,
+            departureTime,
+            arrivalTime,
+            
+            // Informations passagers
+            passengerCount,
+            passengerList,
+            
+            // Informations facture
+            invoiceReference,
+            invoiceAmount,
+            invoiceBalance,
+            invoiceEmissionDate,
+            invoiceDueDate,
+            invoiceStatus: invoice?.status || 'unpaid'
+        });
+
+        // ✅ UTILISER NotificationService.sendEmail (pas de création de transporteur)
+        console.log(`📧 Envoi email à ${customerEmail} via NotificationService...`);
+        
+        const emailResult = await NotificationService.sendEmail(
+            customerEmail,
+            emailSubject,
+            emailBody
+        );
+
+        if (emailResult && emailResult.success) {
+            console.log(`✅ Confirmation envoyée à ${customerEmail} pour la réservation ${reservation.id}`);
+            return { success: true, messageId: emailResult.messageId };
+        } else {
+            console.warn(`⚠️ Échec envoi confirmation à ${customerEmail}:`, emailResult?.error);
+            return { success: false, error: emailResult?.error };
+        }
+
+    } catch (error) {
+        console.error(`❌ Erreur lors de l'envoi de la confirmation pour la réservation ${reservation?.id}:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+// ✅ CORRECTION de NotificationService.sendReservationConfirmationToCustomer
+// pour qu'il utilise la même logique qui fonctionne
+
+// Template HTML amélioré avec toutes les données
+function generateInvoiceTemplate(data) {
+    const {
+        // Réservation
+        reservationId,
+        reservationDate,
+        tripType,
+        status,
+        
+        // Client
+        customerFirstName,
+        customerLastName,
+        customerEmail,
+        
+        // Agence
+        agencyName,
+        agencyAddress,
+        agencyPhone,
+       // agencyEmail,
+        
+        // Vol
+        flightName,
+        flightOrigin,
+        flightDestination,
+        flightCompany,
+        flightClass,
+        departureTime,
+        arrivalTime,
+        
+        // Passagers
+        passengerCount,
+        passengerList,
+        
+        // Facture
+        invoiceReference,
+        invoiceAmount,
+        invoiceBalance,
+        invoiceEmissionDate,
+        invoiceDueDate,
+        invoiceStatus
+    } = data;
+
+    const formattedAmount = new Intl.NumberFormat('fr-FR').format(invoiceAmount || 0);
+    const formattedBalance = new Intl.NumberFormat('fr-FR').format(invoiceBalance || 0);
+    const isPaid = invoiceStatus === 'paid';
+    const isPartiallyPaid = invoiceBalance > 0 && invoiceBalance < invoiceAmount;
+
+    return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Confirmation de Réservation #${reservationId}</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                line-height: 1.6;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 20px;
+                margin: 0;
+                min-height: 100vh;
+            }
+            .container {
+                max-width: 800px;
+                background: white;
+                padding: 30px;
+                border-radius: 20px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+                margin: 20px auto;
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+                border-bottom: 3px solid #4CAF50;
+                padding-bottom: 20px;
+            }
+            .header h1 {
+                color: #4CAF50;
+                margin: 0;
+                font-size: 32px;
+                font-weight: 600;
+            }
+            .confirmation-badge {
+                background: #4CAF50;
+                color: white;
+                padding: 10px 25px;
+                border-radius: 30px;
+                font-size: 18px;
+                font-weight: bold;
+                display: inline-block;
+                margin: 15px 0;
+                box-shadow: 0 4px 10px rgba(76, 175, 80, 0.3);
+            }
+            .section {
+                background: #f8fafc;
+                padding: 25px;
+                border-radius: 15px;
+                margin-bottom: 25px;
+                border: 1px solid #e2e8f0;
+            }
+            .section-title {
+                color: #2d3748;
+                font-size: 20px;
+                font-weight: 600;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                border-bottom: 2px solid #e2e8f0;
+                padding-bottom: 10px;
+            }
+            .section-title i {
+                font-size: 24px;
+            }
+            .grid-2 {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 20px;
+            }
+            .info-row {
+                display: flex;
+                flex-direction: column;
+                margin-bottom: 15px;
+            }
+            .info-label {
+                font-size: 13px;
+                color: #718096;
+                margin-bottom: 5px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            .info-value {
+                font-size: 16px;
+                color: #1a202c;
+                font-weight: 600;
+            }
+            .flight-card {
+                background: linear-gradient(135deg, #e6f7ff, #bae7ff);
+                padding: 20px;
+                border-radius: 15px;
+                margin: 20px 0;
+                border: 2px solid #1890ff;
+            }
+            .flight-route {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin: 15px 0;
+                font-size: 20px;
+                font-weight: bold;
+                color: #0050b3;
+            }
+            .flight-time {
+                background: rgba(24, 144, 255, 0.1);
+                padding: 10px;
+                border-radius: 10px;
+                margin-top: 10px;
+            }
+            .invoice-card {
+                background: linear-gradient(135deg, #f6ffed, #d9f7be);
+                padding: 20px;
+                border-radius: 15px;
+                margin: 20px 0;
+                border: 2px solid #52c41a;
+            }
+            .invoice-total {
+                background: #52c41a;
+                color: white;
+                padding: 15px;
+                border-radius: 10px;
+                text-align: center;
+                margin: 20px 0;
+                font-size: 24px;
+                font-weight: bold;
+            }
+            .passenger-list {
+                background: white;
+                padding: 15px;
+                border-radius: 10px;
+                margin-top: 15px;
+            }
+            .payment-status {
+                display: inline-block;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-weight: bold;
+                font-size: 14px;
+                margin-top: 10px;
+            }
+            .status-paid {
+                background: #52c41a;
+                color: white;
+            }
+            .status-unpaid {
+                background: #ff4d4f;
+                color: white;
+            }
+            .status-partial {
+                background: #faad14;
+                color: white;
+            }
+            .action-buttons {
+                text-align: center;
+                margin: 30px 0;
+            }
+            .btn {
+                display: inline-block;
+                background: #1890ff;
+                color: white;
+                padding: 14px 30px;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: bold;
+                margin: 0 10px;
+                transition: all 0.3s;
+                border: none;
+                cursor: pointer;
+            }
+            .btn:hover {
+                background: #096dd9;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(24, 144, 255, 0.3);
+            }
+            .btn-pay {
+                background: #52c41a;
+            }
+            .btn-pay:hover {
+                background: #389e0d;
+            }
+            .footer {
+                margin-top: 40px;
+                font-size: 13px;
+                text-align: center;
+                color: #718096;
+                border-top: 1px solid #e2e8f0;
+                padding-top: 20px;
+            }
+            .contact-info {
+                background: #e6f7ff;
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+                text-align: center;
+            }
+            @media (max-width: 768px) {
+                .container {
+                    padding: 20px;
+                }
+                .grid-2 {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <!-- En-tête -->
+            <div class="header">
+                <h1>🎫 Réservation Confirmée</h1>
+                <div class="confirmation-badge">
+                    ✓ CONFIRMÉE
+                </div>
+                <p style="color: #4a5568; margin-top: 10px; font-size: 18px;">
+                    Référence: <strong style="color: #2d3748;">#${reservationId}</strong>
+                </p>
+                <p style="color: #718096; font-size: 14px;">
+                    Confirmée le ${reservationDate}
+                </p>
+            </div>
+
+            <!-- Informations client -->
+            <div class="section">
+                <div class="section-title">
+                    👤 Voyageur
+                </div>
+                <div class="grid-2">
+                    <div class="info-row">
+                        <span class="info-label">Nom complet</span>
+                        <span class="info-value">${customerFirstName} ${customerLastName}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Email</span>
+                        <span class="info-value">${customerEmail}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Type de voyage</span>
+                        <span class="info-value">${tripType}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Statut</span>
+                        <span class="info-value" style="color: #52c41a;">${status.toUpperCase()}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Détails du vol -->
+            ${flightName !== 'N/A' ? `
+            <div class="flight-card">
+                <div class="section-title" style="color: #1890ff; border-bottom-color: #91d5ff;">
+                    ✈️ Votre Vol
+                </div>
+                <div class="flight-route">
+                    <span>${flightOrigin}</span>
+                    <span style="font-size: 24px;">→</span>
+                    <span>${flightDestination}</span>
+                </div>
+                <div class="grid-2">
+                    <div class="info-row">
+                        <span class="info-label">Compagnie</span>
+                        <span class="info-value">${flightCompany}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Vol</span>
+                        <span class="info-value">${flightName}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Classe</span>
+                        <span class="info-value">${flightClass}</span>
+                    </div>
+                </div>
+                <div class="flight-time">
+                    <div class="grid-2">
+                        <div class="info-row">
+                            <span class="info-label">Départ</span>
+                            <span class="info-value">${departureTime}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Arrivée</span>
+                            <span class="info-value">${arrivalTime}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+
+            <!-- Passagers -->
+            <div class="section">
+                <div class="section-title">
+                    👥 Passagers
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Nombre de passagers</span>
+                    <span class="info-value">${passengerCount}</span>
+                </div>
+                <div class="passenger-list">
+                    <span class="info-label">Liste des passagers</span>
+                    <span class="info-value">${passengerList}</span>
+                </div>
+            </div>
+
+            <!-- Agence -->
+            <div class="section">
+                <div class="section-title">
+                    🏢 Agence de voyage
+                </div>
+                <div class="grid-2">
+                    <div class="info-row">
+                        <span class="info-label">Nom</span>
+                        <span class="info-value">${agencyName}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Adresse</span>
+                        <span class="info-value">${agencyAddress}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Téléphone</span>
+                        <span class="info-value">${agencyPhone}</span>
+                    </div>
+                   
+                </div>
+            </div>
+
+            <!-- Facture -->
+            <div class="invoice-card">
+                <div class="section-title" style="color: #52c41a; border-bottom-color: #b7eb8f;">
+                    💰 Facture
+                </div>
+                <div class="grid-2">
+                    <div class="info-row">
+                        <span class="info-label">Référence facture</span>
+                        <span class="info-value">${invoiceReference}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Date d'émission</span>
+                        <span class="info-value">${invoiceEmissionDate}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Date d'échéance</span>
+                        <span class="info-value">${invoiceDueDate}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Statut paiement</span>
+                        <span class="info-value">
+                            <span class="payment-status ${isPaid ? 'status-paid' : isPartiallyPaid ? 'status-partial' : 'status-unpaid'}">
+                                ${isPaid ? '✓ Payée' : isPartiallyPaid ? '⚠️ Paiement partiel' : '⏳ En attente'}
+                            </span>
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="invoice-total">
+                    <div style="font-size: 16px; margin-bottom: 5px;">Montant total</div>
+                    ${formattedAmount} XOF
+                    ${invoiceBalance > 0 && invoiceBalance < invoiceAmount ? `
+                    <div style="font-size: 16px; margin-top: 10px; background: rgba(255,255,255,0.2); padding: 8px; border-radius: 5px;">
+                        Solde à payer: ${formattedBalance} XOF
+                    </div>
+                    ` : ''}
+                    ${invoiceBalance === invoiceAmount ? `
+                    <div style="font-size: 16px; margin-top: 10px; background: rgba(255,255,255,0.2); padding: 8px; border-radius: 5px;">
+                        À payer: ${formattedBalance} XOF
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="action-buttons">
+                ${!isPaid ? `
+                <a href="${process.env.FRONTEND_URL || '#'}/paiement/${reservationId}" class="btn btn-pay">
+                    💳 Procéder au paiement
+                </a>
+                ` : ''}
+                <a href="${process.env.FRONTEND_URL || '#'}/mes-reservations/${reservationId}" class="btn">
+                    📋 Voir ma réservation
+                </a>
+            </div>
+
+            <!-- Contact -->
+            <div class="contact-info">
+                <h4 style="color: #0050b3; margin: 0 0 10px 0;">📞 Besoin d'aide ?</h4>
+                <p style="margin: 5px 0;">Contactez ${agencyName}</p>
+                <p style="margin: 5px 0;">
+                    Tél: ${agencyPhone} 
+                </p>
+                <p style="margin: 5px 0; color: #718096;">
+                    Adresse: ${agencyAddress}
+                </p>
+            </div>
+
+            <!-- Footer -->
+            <div class="footer">
+                <p style="margin-bottom: 10px;">
+                    <strong>Merci d'avoir choisi ${agencyName} !</strong>
+                </p>
+                <p style="margin-bottom: 5px;">Bon voyage et à bientôt ! ✈️</p>
+                <p style="color: #a0aec0; font-size: 12px; margin-top: 15px;">
+                    Cet email a été généré automatiquement, merci de ne pas y répondre.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>`;
+}
+
+// bon code de sendCustomerNotification
+             async function sendCustomerNotificationBonCode(reservation, invoice) {
+    try {
+        const customerEmail = reservation.customerReservation?.user?.email || 
+                             reservation.customer?.email; ;
+        const customerFirstName = reservation.customerReservation?.user?.firstName ||  
+                                reservation.customerReservation?.firstName || "N/A";
+        const customerLastName = reservation.customerReservation?.user?.lastName ||
+                               reservation.customerReservation?.lastName ||  "N/A";
+        const agencyName = reservation.agencyReservations?.name || reservation.agency?.name ||  "N/A";
+        const agencyAddress = reservation.agencyReservations?.address || reservation.agency?.address || "N/A";
+
+        if (!customerEmail) {
+            console.warn(`⚠️ Aucune adresse email client trouvée pour la réservation ${reservation.id}`);
+            return { success: false, error: "Email client manquant" };
+        }
+
+        // Récupérer les détails du vol
+        let flightDetails = "N/A";
+        let classDetails = "N/A";
+        let departureTime = "N/A";
+        let arrivalTime = "N/A";
+
+        if (reservation.flightAgency) {
+            const flightAgency = reservation.flightAgency || reservation.vols ;
+            if (flightAgency.flight) {
+                const flight = flightAgency.flight;
+                flightDetails = `${flight.name} - ${flight.origin?.name || 'N/A'} → ${flight.destination?.name || 'N/A'}`;
+            }
+
+            if (reservation?.class?.class.classId && flightAgency.Classes) {
+                const selectedClass = flightAgency.Classes.find(cls => cls.id === reservation.class?.class.classId);
+                classDetails = selectedClass ? `${selectedClass.name}` : "N/A";
+            }
+
+            if (flightAgency.departureTime) {
+                departureTime = new Date(flightAgency.departureTime).toLocaleString('fr-FR');
+            }
+            if (flightAgency.arrivalTime) {
+                arrivalTime = new Date(flightAgency.arrivalTime).toLocaleString('fr-FR');
+            }
+        }
+
+        const emailSubject = `📋 Facture de votre réservation #${reservation.id}`;
+        const emailBody = generateInvoiceTemplate({
+            reservation:{
+                id: reservation.id,
+                customerReservation: reservation.customerReservation,
+                agencyReservations: reservation.agencyReservations,
+                vols: reservation.vols,
+                classId: reservation.classId,
+                tripType: reservation.tripType,
+                totalPrice: reservation.totalPrice
+            },
+            customerFirstName,
+            customerLastName,
+            agencyName,
+            agencyAddress,
+            flightDetails,
+            classDetails,
+            departureTime,
+            arrivalTime,
+            invoice
+        });
+
+        // Appel correct à sendEmail
+        const emailResult = await NotificationService.sendEmail(
+            customerEmail,
+            emailSubject,
+            emailBody
+        );
+
+        if (emailResult && emailResult.success) {
+            console.log(`✅ Facture envoyée à ${customerEmail} pour la réservation ${reservation.id}`);
+            return { success: true, messageId: emailResult.messageId };
+        } else {
+            console.warn(`⚠️ Échec envoi facture à ${customerEmail}:`, emailResult?.error);
+            return { success: false, error: emailResult?.error };
+        }
+
+    } catch (error) {
+        console.error(`❌ Erreur lors de l'envoi de la facture pour la réservation ${reservation.id}:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+// Template HTML amélioré pour la facture
+function generateInvoiceTemplateBonCode(data) {
+    const {
+        reservation,
+        customerFirstName,
+        customerLastName,
+        agencyName,
+        agencyAddress,
+        flightDetails,
+        classDetails,
+        departureTime,
+        arrivalTime,
+        invoice
+    } = data;
+          const customerEmail = reservation.customerReservation?.user?.email || 'N/A';
+    const flightOrigin = reservation.vols?.flight?.origin?.name || reservation.flightAgency?.flight?.origin?.name || 'N/A';
+    const flightDestination = reservation.vols?.flight?.destination?.name || reservation.flightAgency?.flight?.destination?.name || 'N/A';
+    const flightCompany = reservation.vols?.flight?.companyVol?.name || reservation.flightAgency?.flight?.companyVol?.name || 'N/A';
+    return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Facture Réservation #${reservation.id}</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 20px;
+                margin: 0;
+                min-height: 100vh;
+            }
+            .container {
+                max-width: 800px;
+                background: #fff;
+                padding: 40px;
+                border-radius: 15px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                margin: 0 auto;
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 40px;
+                border-bottom: 3px solid #007BFF;
+                padding-bottom: 20px;
+            }
+            .header h1 {
+                color: #007BFF;
+                margin: 0;
+                font-size: 32px;
+            }
+            .invoice-badge {
+                background: #007BFF;
+                color: white;
+                padding: 10px 20px;
+                border-radius: 25px;
+                font-size: 16px;
+                font-weight: bold;
+                display: inline-block;
+                margin: 10px 0;
+            }
+            .section {
+                background: #f8f9fa;
+                padding: 25px;
+                border-radius: 10px;
+                margin-bottom: 25px;
+                border-left: 4px solid #007bff;
+            }
+            .section h3 {
+                color: #007bff;
+                margin-top: 0;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 20px;
+            }
+            .info-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+                margin-top: 15px;
+            }
+            .info-item {
+                display: flex;
+                flex-direction: column;
+            }
+            .info-label {
+                font-weight: bold;
+                color: #555;
+                font-size: 14px;
+                margin-bottom: 5px;
+            }
+            .info-value {
+                color: #333;
+                font-size: 16px;
+                font-weight: 500;
+            }
+            .flight-card {
+                background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+                border: 2px solid #2196f3;
+            }
+            .flight-route {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin: 15px 0;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            .flight-details {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 15px;
+                margin-top: 15px;
+            }
+            .invoice-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+                background: white;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            .invoice-table th {
+                background: #007BFF;
+                color: white;
+                padding: 15px;
+                text-align: left;
+                font-weight: bold;
+            }
+            .invoice-table td {
+                padding: 15px;
+                border-bottom: 1px solid #eee;
+            }
+            .invoice-table tr:nth-child(even) {
+                background: #f8f9fa;
+            }
+            .invoice-table tr:hover {
+                background: #e7f3ff;
+            }
+            .amount-cell {
+                font-weight: bold;
+                color: #28a745;
+                text-align: right;
+            }
+            .total-section {
+                background: #e8f5e8;
+                padding: 25px;
+                border-radius: 10px;
+                margin: 25px 0;
+                border: 2px solid #28a745;
+                text-align: center;
+            }
+            .total-amount {
+                font-size: 28px;
+                font-weight: bold;
+                color: #28a745;
+                margin: 10px 0;
+            }
+            .balance-warning {
+                background: #fff3cd;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #ffc107;
+                text-align: center;
+            }
+            .payment-actions {
+                text-align: center;
+                margin: 30px 0;
+            }
+            .btn {
+                display: inline-block;
+                background: #28a745;
+                color: white;
+                padding: 12px 30px;
+                text-decoration: none;
+                border-radius: 6px;
+                font-weight: bold;
+                margin: 0 10px;
+                transition: all 0.3s;
+            }
+            .btn:hover {
+                background: #218838;
+                transform: translateY(-2px);
+            }
+            .btn-pay {
+                background: #28a745;
+            }
+            .btn-details {
+                background: #007bff;
+            }
+            .footer {
+                margin-top: 40px;
+                font-size: 14px;
+                text-align: center;
+                color: #666;
+                border-top: 1px solid #eee;
+                padding-top: 20px;
+            }
+            .contact-info {
+                background: #e7f3ff;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                text-align: center;
+            }
+            @media (max-width: 768px) {
+                .info-grid, .flight-details {
+                    grid-template-columns: 1fr;
+                }
+                .container {
+                    padding: 20px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <!-- En-tête de la facture -->
+            <div class="header">
+                <h1>📋 Facture de Réservation</h1>
+                <div class="invoice-badge">RÉF: ${reservation.id}</div>
+                <p>Votre réservation a été confirmée - Voici votre facture</p>
+            </div>
+
+            <!-- Informations client -->
+            <div class="section">
+                <h3>👤 Informations Client</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Nom complet:</span>
+                        <span class="info-value">${customerFirstName} ${customerLastName}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Email:</span>
+                        <span class="info-value">${reservation.customerReservation?.user?.email || 'N/A'}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Date d'émission:</span>
+                        <span class="info-value">${new Date().toLocaleString('fr-FR')}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Statut:</span>
+                        <span class="info-value" style="color: #dc3545; font-weight: bold;">En attente de paiement</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Détails du vol -->
+            ${flightDetails !== 'N/A' ? `
+            <div class="flight-card">
+                <h3 style="color: #2196f3; text-align: center; margin-top: 0;">✈️ Détails du Vol</h3>
+                <div class="flight-route">
+                    <span>${reservation.flightAgency?.flight?.origin?.name || 'Départ'}</span>
+                    <span style="color: #2196f3;">→</span>
+                    <span>${reservation.flightAgency?.flight?.destination?.name || 'Arrivée'}</span>
+                </div>
+                <div class="flight-details">
+                    <div class="info-item">
+                        <span class="info-label">Compagnie:</span>
+                        <span class="info-value">${reservation.flightAgency?.flight?.companyVol?.name || 'N/A'}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Classe:</span>
+                        <span class="info-value">${classDetails}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Départ:</span>
+                        <span class="info-value">${departureTime}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Arrivée:</span>
+                        <span class="info-value">${arrivalTime}</span>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+
+            <!-- Informations agence -->
+            <div class="section">
+                <h3>🏢 Agence de Voyage</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Nom:</span>
+                        <span class="info-value">${agencyName}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Adresse:</span>
+                        <span class="info-value">${agencyAddress}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tableau de facturation détaillé -->
+            <div class="section">
+                <h3>💰 Détails de la Facture</h3>
+                <table class="invoice-table">
+                    <thead>
+                        <tr>
+                            <th>Description</th>
+                            <th>Quantité</th>
+                            <th>Prix Unitaire (XOF)</th>
+                            <th>Total (XOF)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Réservation de vol - ${flightDetails !== 'N/A' ? flightDetails : 'Vol'}</td>
+                            <td>${invoice.quantity || 1}</td>
+                            <td>${formatCurrency(invoice.amount / (invoice.quantity || 1))}</td>
+                            <td class="amount-cell">${formatCurrency(invoice.amount)}</td>
+                        </tr>
+                        ${invoice.balance > 0 ? `
+                        <tr>
+                            <td>Solde à régler</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td class="amount-cell" style="color: #dc3545;">${formatCurrency(invoice.balance)}</td>
+                        </tr>
+                        ` : ''}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Section total -->
+            <div class="total-section">
+                <h3 style="color: #28a745; margin-top: 0;">Montant Total</h3>
+                <div class="total-amount">${formatCurrency(invoice.amount)} XOF</div>
+                ${invoice.balance > 0 ? `
+                <p style="color: #dc3545; font-weight: bold;">
+                    Solde à payer: ${formatCurrency(invoice.balance)} XOF
+                </p>
+                ` : `
+                <p style="color: #28a745; font-weight: bold;">
+                    ✅ Montant intégralement payé
+                </p>
+                `}
+            </div>
+
+            <!-- Avertissement solde -->
+            ${invoice.balance > 0 ? `
+            <div class="balance-warning">
+                <h4 style="color: #856404; margin-top: 0;">💡 Important</h4>
+                <p>Votre réservation sera confirmée définitivement après réception du solde de <strong>${formatCurrency(invoice.balance)} XOF</strong>.</p>
+            </div>
+            ` : ''}
+
+            <!-- Actions de paiement -->
+           
+
+            <!-- Informations de contact -->
+            <div class="contact-info">
+                <h4>📞 Besoin d'aide ?</h4>
+                <p>Pour toute question concernant votre facture, contactez notre équipe :</p>
+                <p><strong>${agencyName}</strong> - ${agencyAddress}</p>
+            </div>
+
+            <div class="footer">
+                <p><strong>Merci pour votre confiance !</strong></p>
+                <p>L'équipe ${agencyName}</p>
+                <p><em>Cet email a été généré automatiquement, merci de ne pas y répondre.</em></p>
+            </div>
+        </div>
+    </body>
+    </html>`;
+}
+
+// Fonction utilitaire pour formater les montants
+function formatCurrency(amount) {
+    return new Intl.NumberFormat('fr-FR').format(amount || 0);
+}
+              async function sendCustomerNotificationTest(reservation, invoice) {
+    try {
+        const customerEmail = reservation.customerReservation?.user?.email;
+        const customerFirstName = reservation.customerReservation?.user?.name || "N/A";
+        const customerLastName = reservation.customerReservation?.user?.lastName || "N/A";
+        const agencyName = reservation.agencyReservations?.name || "N/A";
+        const agencyAddress = reservation.agencyReservations?.address || "N/A";
+
+        if (!customerEmail) {
+            console.warn(`⚠️ Aucune adresse email client trouvée pour la réservation ${reservation.id}`);
+            return { success: false, error: "Email client manquant" };
+        }
+
+        // ✅ VALIDATION DES DONNÉES DE FACTURE
+        if (!invoice) {
+            console.warn(`⚠️ Aucune facture fournie pour la réservation ${reservation.id}`);
+            return { success: false, error: "Facture manquante" };
+        }
+
+        const invoiceHtml = `
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Facture de Réservation</title>
+            <style>
+                body { 
+                    font-family: Arial, sans-serif; 
+                    line-height: 1.6; 
+                    background-color: #f4f4f4; 
+                    padding: 20px; 
+                    margin: 0;
+                }
+                .container { 
+                    max-width: 600px; 
+                    background: #fff; 
+                    padding: 30px; 
+                    border-radius: 8px; 
+                    box-shadow: 0px 0px 15px rgba(0,0,0,0.1); 
+                    margin: 0 auto;
+                }
+                h2 { 
+                    color: #007BFF; 
+                    text-align: center; 
+                    margin-bottom: 20px;
+                }
+                .header { 
+                    background: #f8f9fa;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin-bottom: 20px;
+                }
+                table { 
+                    width: 100%; 
+                    border-collapse: collapse; 
+                    margin: 20px 0;
+                }
+                th, td { 
+                    border: 1px solid #ddd; 
+                    padding: 12px; 
+                    text-align: left; 
+                }
+                th { 
+                    background-color: #007BFF; 
+                    color: white; 
+                    font-weight: bold;
+                }
+                tr:nth-child(even) {
+                    background-color: #f8f9fa;
+                }
+                .footer { 
+                    margin-top: 20px; 
+                    font-size: 14px; 
+                    text-align: center; 
+                    color: #666;
+                    padding-top: 20px;
+                    border-top: 1px solid #eee;
+                }
+                .amount {
+                    font-weight: bold;
+                    color: #28a745;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>📋 Facture de Réservation</h2>
+
+                <div class="header">
+                    <p><strong>👤 Client:</strong> ${customerFirstName} ${customerLastName}</p>
+                    <p><strong>🏢 Agence:</strong> ${agencyName}</p>
+                    <p><strong>📍 Adresse:</strong> ${agencyAddress}</p>
+                    <p><strong>📅 Date d'émission:</strong> ${new Date().toLocaleDateString('fr-FR')}</p>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Référence</th>
+                            <th>Passagers</th>
+                            <th>Total (XOF)</th>
+                            <th>Solde (XOF)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>${invoice.reference || 'N/A'}</td>
+                            <td>${invoice.quantity || 0}</td>
+                            <td class="amount">${formatCurrency(invoice.amount)}</td>
+                            <td class="amount">${formatCurrency(invoice.balance)}</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="footer">
+                    <p><strong>💡 Important:</strong> Votre réservation sera confirmée après réception du paiement complet.</p>
+                    <p>Merci de procéder au paiement dès que possible sur la plateforme TravelApp.</p>
+                    <p><em>Cet email a été généré automatiquement, merci de ne pas y répondre.</em></p>
+                </div>
+            </div>
+        </body>
+        </html>
+        `;
+
+        // ✅ APPEL CORRECT À sendEmail (3 paramètres seulement)
+        const emailResult = await NotificationService.sendEmail(
+            customerEmail,
+            "Votre facture de réservation ! Veuillez procéder au paiement dans les plus brefs délais",
+            invoiceHtml
+        );
+
+        // ✅ ANALYSE DU RÉSULTAT
+        if (emailResult && emailResult.success) {
+            console.log(`✅ Notification envoyée à ${customerEmail} pour la réservation ${reservation.id}`);
+            return { success: true, messageId: emailResult.messageId };
+        } else {
+            console.warn(`⚠️ Échec envoi notification à ${customerEmail}:`, emailResult?.error);
+            return { 
+                success: false, 
+                error: emailResult?.error || "Erreur inconnue lors de l'envoi d'email" 
+            };
+        }
+
+    } catch (error) {
+        console.error(`❌ Erreur lors de l'envoi de la notification pour la réservation ${reservation.id}:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+// ✅ FONCTION UTILITAIRE POUR FORMATER LES MONTANTS
+function formatCurrency(amount) {
+    if (amount == null) return "0";
+    return new Intl.NumberFormat('fr-FR').format(amount);
+}      
+
+async function getReservationDetailsModifier(reservationId) {
+    return await Reservation.findByPk(reservationId, {
+        include: [
+            { model: Passenger, as: 'passengers' },
+            { model: Invoice, as: 'reservationInvoices' }
+        ]
+    });
+}
+ async function getReservationDetails(reservationId) {
+  try {
+    const reservation = await Reservation.findOne({
+      where: { id: reservationId },
+
+      include: [
+
+        // CLIENT
+        {
+          model: Customer,
+          as: 'customerReservation',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['id', 'email', 'name']
+            }
+          ]
+        },
+
+        // AGENCE
+        {
+          model: Agency,
+          as: 'agencyReservations',
+          attributes: ['id', 'name', 'address', 'phone1']
+        },
+
+        // VOL AGENCE
+        {
+          model: FlightAgency,
+          as: 'vols',
+          include: [
+            {
+              model: Vol,
+              as: 'flight',
+              include: [
+                {
+                  model: Destination,
+                  as: 'origin',
+                  attributes: ['id', 'name', 'city']
+                },
+                {
+                  model: Destination,
+                  as: 'destination',
+                  attributes: ['id', 'name', 'city']
+                },
+                {
+                  model: Company,
+                  as: 'companyVol',
+                  attributes: ['id', 'name']
+                }
+              ]
+            }
+          ]
+        },
+
+        // CLASSE AGENCE + CLASSE REELLE
+        {
+          model: ClassAgency,
+          as: 'agencyClass',
+          include: [
+            {
+              model: Class,
+              as: 'class',
+              attributes: ['id', 'name']
+            }
+          ]
+        },
+
+        // PASSAGERS
+        {
+          model: Passenger,
+          as: 'passengers',
+          include: [
+            {
+              model: Document,
+              as: 'documents'
+            }
+          ]
+        },
+
+        // FACTURE (dernière facture)
+        {
+          model: Invoice,
+          as: 'reservationInvoices',
+          separate: true,
+          limit: 1,
+          order: [['createdAt', 'DESC']]
+        },
+
+        // CAMPAGNE
+        {
+          model: Campaign,
+          as: 'campaign',
+          required: false
+        }
+
+      ]
+    });
+
+    return reservation;
+
+  } catch (error) {
+    console.error(`❌ Erreur getReservationDetails pour ${reservationId}:`, error.message);
+    return null;
+  }
+}
+
+// Correction de getReservationDetails pour charger toutes les données
+async function getReservationDetailsActuelBon(reservationId) {
+    try {
+        return await Reservation.findOne({
+            where: { id: reservationId },
+            include: [
+                {
+                    model: Customer,
+                    as: 'customerReservation',
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['id', 'email', 'name']
+                    }]
+                },
+                {
+                    model: Agency,
+                    as: 'agencyReservations',
+                    attributes: ['id', 'name', 'address', 'phone1']
+                },
+                {
+                    model: FlightAgency,
+                    as: 'vols',  // Utilisez 'vols' car c'est l'alias défini
+                    include: [
+                        {
+                            model: Vol,
+                            as: 'flight',
+                            include: [
+                                {
+                                    model: Destination,
+                                    as: 'origin',
+                                    attributes: ['id', 'name', 'city']
+                                },
+                                {
+                                    model: Destination,
+                                    as: 'destination',
+                                    attributes: ['id', 'name', 'city']
+                                },
+                                {
+                                    model: Company,
+                                    as: 'companyVol',
+                                    attributes: ['id', 'name']
+                                }
+                            ]
+                        },
+                       
+                    ]
+                },
+                {
+                    model: Passenger,
+                    as: 'passengers',
+                    include: [{
+                        model: Document,
+                        as: 'documents'
+                    }]
+                },
+                {
+                    model: Invoice,
+                    as: 'reservationInvoices',
+                    limit: 1,
+                    order: [['createdAt', 'DESC']]
+                },
+                {
+                    model: Campaign,
+                    as: 'campaign',
+                    required: false
+                }
+            ]
+        });
+    } catch (error) {
+        console.error(`❌ Erreur getReservationDetails pour ${reservationId}:`, error.message);
+        return null;
+    }
+}
+
+      // Dans votre contrôleur ou un service dédié
+async function getReservationDetailsBon(reservationId) {
+    return await Reservation.findOne({
+        where: { id: reservationId },
+        include: [
+            // 1. Client avec utilisateur
+            {
+                model: Customer,
+                as: 'customerReservation',
+                include: [{
+                    model: User,
+                    as: 'user',
+                    attributes: ['id', 'email', 'name']
+                }]
+            },
+            // 2. Agence
+            {
+                model: Agency,
+                as: 'agencyReservations',
+                attributes: ['id', 'name', 'address', 'phone1', 'email', 'logo']
+            },
+            // 3. Vol avec agence
+            {
+                model: FlightAgency,
+                as: 'vols',
+                include: [
+                    {
+                        model: Vol,
+                        as: 'flight',
+                        include: [
+                            {
+                                model: Destination,
+                                as: 'origin',
+                                attributes: ['id', 'name', 'city', 'country']
+                            },
+                            {
+                                model: Destination,
+                                as: 'destination',
+                                attributes: ['id', 'name', 'city', 'country']
+                            },
+                            {
+                                model: Company,
+                                as: 'companyVol',
+                                attributes: ['id', 'name']
+                            }
+                        ]
+                    },
+                    // 4. Classes disponibles pour ce vol
+                    {
+                        model: Class,
+                        as: 'Classes',
+                        attributes: ['id', 'name', 'priceMultiplier']
+                    }
+                ]
+            },
+            // 5. Passagers avec documents
+            {
+                model: Passenger,
+                as: 'passengers',
+                include: [{
+                    model: Document,
+                    as: 'documents'
+                }]
+            },
+            // 6. Facture associée
+           {
+                model: Invoice,
+                as: 'reservationInvoices',  // Selon vos relations
+                limit: 1,
+                order: [['createdAt', 'DESC']]
+            },{
+                model: Campaign,
+                as: 'campaign',
+                attributes: ['id', 'title', 'type', 'price'],
+                required: false
+            }
+        ]
+    });
+}
+
+
+exports.CounterProposals = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const { reservationId, proposedVolId, proposedClassId, proposedPrice, notes } = req.body;
+        const userId = req.user.id;
+        console.log('counter-Proposal', req.body);
+
+        // 1. Récupération de la réservation originale avec toutes les relations
+        const original = await Reservation.findByPk(reservationId, {
+            include: [
+                {
+                    model: AgencyVol,
+                    as: 'vols',
+                    include: [
+                        {
+                            model: Vol,
+                            as: 'flight',
+                            include: [
+                                { model: Destination, as: 'origin' },
+                                { model: Destination, as: 'destination' }
+                            ]
+                        }
+                    ]
+                },
+                { model: AgencyClass, as: 'agencyClass',include: [
+      {
+        model: Class,
+        as: "class"
+      }
+   ] },
+                { model: Destination, as: 'startDestination' },
+                { model: Destination, as: 'endDestination' },
+                { model: Customer, as: 'customerReservation' },
+                { 
+                    model: Passenger, 
+                    as: 'passengers',
+                    include: [{
+                        model: Document,
+                        as: 'documents',
+                        
+                    }] // Inclure les documents des passagers
+                }
+            ]
+        });
+
+        if (!original || original.status !== 'demand') {
+            throw new Error('Demande invalide');
+        }
+
+        // 2. Validation des passagers
+        if (!original.passengers || original.passengers.length === 0) {
+            throw new Error('La demande originale ne contient aucun passager');
+        }
+   console.log('original',original)
+        // 3. Validation des nouvelles propositions
+        const proposedVol = await AgencyVol.findByPk(proposedVolId, {
+            include: [
+                {
+                    model: Vol,
+                    as: 'flight',
+                    include: [
+                        { model: Destination, as: 'origin' },
+                        { model: Destination, as: 'destination' }
+                    ]
+                }
+            ]
+        });
+
+        if (!proposedVol) throw new Error('Vol proposé invalide');
+
+        //const proposedClass = await AgencyClass.findByPk(proposedClassId);
+        //if (!proposedClass) throw new Error('Classe proposée invalide');
+           // 2️⃣ Récupérer la vraie classe proposée liée à ce vol
+const proposedClass = await AgencyClass.findOne({
+  where: {
+    classId: proposedClassId,
+    agencyVolId: proposedVolId
+  },
+  include: [
+    {
+      model: Class,
+      as: 'class',
+      attributes: ['id', 'name']
+    }
+  ]
+});
+
+if (!proposedClass) {
+  throw new Error('Classe proposée invalide pour ce vol');
+}
+        // 4. Création de la contre-proposition avec copie des passagers
+        const proposalData = {
+            
+            customerId: original.customerId,
+            agencyId: original.agencyId,
+            campaignId: original.campaignId,
+            startDestinationId: original.startDestinationId,
+            endDestinationId: original.endDestinationId,
+            agencyVolId: proposedVolId,
+            agencyClassId: proposedClassId,
+            startAt: original.startAt,
+            endAt: original.endAt,
+            returnVolId: original.returnVolId,
+            tripType: original.tripType,
+            totalPrice: proposedPrice,
+            description: original.description,
+            status: 'counter_proposal',
+            originalDemandId: original.id,
+            proposalDetails: {
+                notes,
+                proposedBy: userId,
+                originalVol: original.vols,
+              ///  originalClass: original.agencyClass.class|| null,
+                proposedVol,
+                proposedClass
+            },
+            createdBy: userId
+        };
+
+        
+        const proposal = await Reservation.create(proposalData, { transaction: t });
+
+        // 5. Copie des passagers et documents
+        // 5. Copie des passagers et documents
+        await Promise.all(original.passengers.map(async passenger => {
+            const passengerData = passenger.toJSON();
+            delete passengerData.id; // Supprimer l'ID existant
+            
+            const newPassenger = await Passenger.create({
+                ...passengerData,
+                reservationId: proposal.id
+            }, { transaction: t });
+
+            if (passenger.documents && passenger.documents.length > 0) {
+                await Document.bulkCreate(
+                    passenger.documents.map(doc => {
+                        const docData = doc.toJSON();
+                        delete docData.id; // Supprimer l'ID existant
+                        return {
+                            ...docData,
+                            relatedEntityId: newPassenger.id,
+                            passengerId: newPassenger.id
+                        };
+                    }),
+                    { transaction: t }
+                );
+            }
+        }));
+        // 6. Mise à jour de l'original et création de l'historique
+        await original.update({ status: 'processing' }, { transaction: t });
+
+        await ReservationHistory.create({
+            reservationId: original.id,
+            action: 'counter_proposal',
+            changedBy: userId,
+            previousData: {
+                vol: original.vols,
+               // class: original.agencyClass.class,
+                price: original.totalPrice,
+                passengerCount: original.passengers.length
+            },
+            newData: {
+                vol: proposedVol,
+                class: proposedClass,
+                price: proposedPrice,
+                passengerCount: original.passengers.length // Même nombre de passagers
+            }, 
+            notes
+        }, { transaction: t });
+
+        // 7. Notification au client
+        await Notification.create({
+            userId: original.customerReservation.userId,
+            title: 'Nouvelle proposition de vol',
+            message: `L'agence vous a fait une nouvelle proposition pour votre demande de réservation veuillez accepter ou refuser la proposition`,
+            relatedEntity: 'Reservation',
+            relatedEntityId: proposal.id,
+            metadata: {
+                originalPrice: original.totalPrice,
+                proposedPrice,
+//                originalDeparture: original.vols.departureTime,
+              proposedDeparture: proposedVol.departureTime,
+    //            originalClass: original.agencyClass.class.name,
+                proposedClass: proposedClass.name,
+                passengerCount: original.passengers.length
+            }
+        }, { transaction: t });
+
+        // 8. Retour des données enrichies avec les passagers
+        const responseData = await Reservation.findByPk(proposal.id, {
+            include: [
+                { model: AgencyVol, as: 'vols' },
+                { model: AgencyClass, as: 'class' },
+                { model: Destination, as: 'startDestination' },
+                { model: Destination, as: 'endDestination' },
+                { 
+                    model: Passenger, 
+                    as: 'passengers',
+                    include: [{
+                        model: Document,
+                        as: 'documents',
+                        where: { relatedEntity: 'Passenger' }, // Ajout du scope
+                        required: false
+                    }]
+                },
+                {
+                    model: Reservation,
+                    as: 'originalDemand',
+                    include: [
+                        { model: AgencyVol, as: 'vols' },
+                        { model: AgencyClass, as: 'class' }
+                    ]
+                }
+            ]
+        });
+
+        await t.commit();
+        res.json({
+            success: true,
+            message: 'Contre-proposition créée avec succès',
+            data: responseData
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('Erreur dans makeCounterProposal:', error);
+        res.status(400).json({
+            success: false,
+            message: error.message,
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+
+exports.respondToProposal = async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const { reservationId, accept, rejectionReason } = req.body;
+        const userId = req.user.id;
+        
+        console.log('Réponse à la proposition:', { reservationId, accept, userId });
+
+        // 1. Vérification de la proposition avec l'agence associée
+        const proposal = await Reservation.findOne({
+            where: { 
+                id: reservationId, 
+                status: 'counter_proposal',
+                originalDemandId: { [Op.not]: null } 
+            },
+            include: [
+                {
+                    model: Reservation,
+                    as: 'originalDemand',
+                    where: { createdBy: userId },
+                    include: [{
+                        model: Customer,
+                        as: 'customerReservation',
+                        include: [{ model: User, as: 'user' }]
+                    }]
+                },
+                {
+                    model: Agency,
+                    as: 'agencyReservations',
+                    include: [{
+                        model: User,
+                        as: 'User',
+                     //   through: { where: { role: ['admin', 'agent'] } 
+                    }]
+                }
+            ],
+            transaction: t
+        });
+
+        if (!proposal) throw new AppError('Proposition invalide ou non trouvée', 404);
+
+        const original = proposal.originalDemand;
+        const agency = proposal.agencyReservations;
+        
+        if (!agency || !agency.User) {
+            throw new AppError('Agence introuvable pour cette proposition', 404);
+        }
+
+        console.log('Agence associée:', agency.id, 'User:', agency.User.id);
+
+        if (accept) {
+            // 2. Acceptation de la proposition
+            await Promise.all([
+                proposal.update({ 
+                    status: 'proposal_accepted',
+                    respondedAt: new Date(),
+                    rejectionReason: null
+                }, { transaction: t }),
+                original.update({ 
+                    status: 'awaiting_confirmation',
+                    updatedAt: new Date()
+                }, { transaction: t })
+            ]);
+
+            // 3. Historique
+            await ReservationHistory.bulkCreate([
+                {
+                    reservationId: proposal.id,
+                    action: 'customer_accept',
+                    changedBy: userId,
+                    details: {
+                        agencyUserId: agency.User.id
+                    }
+                },
+                {
+                    reservationId: original.id,
+                    action: 'awaiting_confirmation',
+                    changedBy: userId
+                }
+            ], { transaction: t });
+
+            // 4. Notification à l'utilisateur de l'agence qui a créé la proposition
+            await Notification.create({
+                userId: agency.User.id,
+                title: 'Proposition acceptée',
+                message: `Le client ${original.customerReservation.user.email} a
+                accepté votre proposition,Veuillez proceder a la confirmation `,
+                relatedEntity: 'Reservation',
+                relatedEntityId: proposal.id,
+                metadata: {
+                    actionRequired: true,
+                    nextStep: 'Confirmer la réservation'
+                }
+            }, { transaction: t });
+
+            await t.commit();
+            
+           try {
+                await NotificationService.sendProposalResponseToAgency(
+                    proposal,
+                    original,
+                    'accepted',
+                    '', // Pas de raison pour l'acceptation
+                    original.customerReservation
+                );
+                console.log(`✅ Email d'acceptation envoyé à l'agence pour la proposition ${proposal.id}`);
+            } catch (emailError) {
+                console.warn(`⚠️ Échec de l'email d'acceptation: ${emailError.message}`);
+            }
+            res.json({ 
+                success: true, 
+                message: 'Proposition acceptée avec succès',
+                data: {
+                    nextStep: '/confirm-reservation',
+                    reservationId: proposal.id,
+                    agencyUserId: agency.User.id
+                }
+            });
+
+        } else {
+            // 2. Rejet de la proposition
+            if (!rejectionReason || rejectionReason.trim().length < 10) {
+                throw new AppError('Veuillez fournir une raison de refus valide (min. 10 caractères)', 400);
+            }
+
+            await Promise.all([
+                proposal.update({
+                    status: 'proposal_rejected',
+                    rejectionReason,
+                    respondedAt: new Date()
+                }, { transaction: t }),
+                original.update({ 
+                    status: 'demand_reopened',
+                    updatedAt: new Date()
+                }, { transaction: t })
+            ]);
+
+            // 3. Historique
+            await ReservationHistory.create({
+                reservationId: proposal.id,
+                action: 'customer_reject',
+                changedBy: userId,
+                notes: rejectionReason,
+                details: {
+                    previousStatus: 'counter_proposal',
+                    newStatus: 'proposal_rejected',
+                    agencyUserId: agency.User.id
+                }
+            }, { transaction: t });
+
+            // 4. Notification à l'utilisateur de l'agence
+            await Notification.create({
+                userId: agency.User.id,
+                title: 'Proposition rejetée',
+                message: `Le client a rejeté votre proposition.
+                Raison: ${rejectionReason}`,
+                relatedEntity: 'Reservation',
+                relatedEntityId: proposal.id,
+                metadata: {
+                    actionRequired: true,
+                    nextStep: 'Proposer une nouvelle contre-proposition'
+                }
+            }, { transaction: t });
+
+            await t.commit();
+            res.json({ 
+                success: true, 
+                message: 'Proposition rejetée',
+                data: {
+                    reservationId: proposal.id,
+                    status: 'proposal_rejected',
+                    agencyUserId: agency.User.id
+                }
+            });
+}        
+
+    } catch (error) {
+        await t.rollback();
+        console.error('Erreur dans respondToProposal:', error);
+        
+        const statusCode = error instanceof AppError ? error.statusCode : 500;
+        res.status(statusCode).json({
+            success: false,
+            message: error.message,
+            error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+exports.CounterProposal = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const { reservationId, proposedVolId, proposedClassId, proposedPrice, notes } = req.body;
+        const userId = req.user.id;
+          console.log('counter-Proposal',req.body)
+        // 1. Vérification des autorisations
+       // const userAgency = await UserAgency.findOne({
+           // where: { userId },
+           // include: [{
+              //  model: Agency,as:"agency",
+               // include: [{
+                //    model: Reservation,as:"agencyReservations",
+              //      where: { id: reservationId }
+            //    }]
+          //  }]
+        //});
+        
+        //if (!userAgency) throw new Error('Non autorisé');
+
+        // 2. Récupération de la réservation originale avec toutes les relations
+        const original = await Reservation.findByPk(reservationId, {
+            include: [
+        {
+            model: AgencyVol,
+            as: 'vols',
+            include: [
+                {
+                    model: Vol,
+                    as: 'flight',
+                    include: [
+                        { model: Destination, as: 'origin' },
+                        { model: Destination, as: 'destination' }
+                    ]
+                }
+            ]
+        },
+        { model: AgencyClass, as: 'AgencyClass',include:[{model:Class,as:'class'}] },
+        { model: Destination, as: 'startDestination' },
+        { model: Destination, as: 'endDestination' },
+        { model: Customer, as: 'customerReservation' },
+        { 
+                    model: Passenger, 
+                    as: 'passengers',
+                   include: [{
+                        model: Document,
+                        as: 'documents',
+                        where: { relatedEntity: 'Passenger' }, // Ajout du scope
+                        required: false
+                    }] // Inclure les documents des passagers
+                }
+
+
+    ]
+        });
+
+        if (!original || original.status !== 'demand') {
+            throw new Error('Demande invalide');
+        }
+
+        // 3. Validation des nouvelles propositions
+        const proposedVol = await AgencyVol.findByPk(proposedVolId, {
+         include: [
+        {
+            model: Vol,
+            as: 'flight',
+            include: [
+                { model: Destination, as: 'origin' },
+                { model: Destination, as: 'destination' }
+            ]
+        }
+    ]
+        });
+        
+        if (!proposedVol) throw new Error('Vol proposé invalide');
+
+        const proposedClass = await AgencyClass.findByPk(proposedClassId);
+        if (!proposedClass) throw new Error('Classe proposée invalide');
+
+        // 4. Vérification de la cohérence des destinations
+//        if (
+ //   original.startDestinationId !== proposedVol.flight.originId ||
+ //   original.endDestinationId !== proposedVol.flight.destinationId
+//) {
+  //  throw new Error('Les destinations proposées ne correspondent pas à la demande initiale');
+//}
+
+
+        // 5. Création de la contre-proposition
+        const proposal = await Reservation.create({
+            ...original.toJSON(),
+            customerId: original.customerId,
+            agencyId: original.agencyId,
+            campaignId: original.campaignId,
+            startDestinationId: original.startDestinationId,
+            endDestinationId: original.endDestinationId,
+            agencyVolId: proposedVolId,
+            agencyClassId: proposedClassId,
+            startAt: original.startAt,
+            endAt: original.endAt,
+            returnVolId: original.returnVolId,
+            tripType: original.tripType,
+            totalPrice: proposedPrice,
+            description: original.description,
+            status: 'counter_proposal',
+            originalDemandId: original.id,
+            proposalDetails: { 
+                notes,
+                proposedBy: userId,
+                originalVol: original.vols,
+                originalClass: original.agencyClass.class,
+                proposedVol,
+                proposedClass
+            },
+            createdBy: userId
+        }, { transaction: t });
+
+        // 6. Mise à jour de l'original et création de l'historique
+        await original.update({ status: 'processing' }, { transaction: t });
+
+        await ReservationHistory.create({
+            reservationId: original.id,
+            action: 'counter_proposal',
+            changedBy: userId,
+            previousData: {
+                vol: original.vols,
+                class: original.class,
+                price: original.totalPrice
+            },
+            newData: {
+                vol: proposedVol,
+                class: proposedClass,
+                price: proposedPrice
+            },
+            notes
+        }, { transaction: t });
+
+        // 7. Notification au client
+        await Notification.create({
+            userId: original.customerReservation.userId,
+            title: 'Nouvelle proposition de vol',
+            message: `L'agence vous a fait une nouvelle proposition pour votre demande de réservation`,
+            relatedEntity: 'Reservation',
+            relatedEntityId: proposal.id,
+            metadata: {
+                originalPrice: original.totalPrice,
+                proposedPrice,
+                originalDeparture: original.vols.departureTime,
+                proposedDeparture: proposedVol.departureTime,
+                originalClass: original.class.name,
+                proposedClass: proposedClass.name
+            }
+        }, { transaction: t });
+
+        // 8. Retour des données enrichies
+        const responseData = await Reservation.findByPk(proposal.id, {
+            include: [
+                { model: AgencyVol, as: 'vols' },
+                { model: AgencyClass, as: 'class' },
+                { model: Destination, as: 'startDestination' },
+                { model: Destination, as: 'endDestination' },
+                { 
+                    model: Reservation, 
+                    as: 'originalDemand',
+                    include: [
+                        { model: AgencyVol, as: 'vols' },
+                        { model: AgencyClass, as: 'class' }
+                    ]
+                }
+            ]
+        });
+
+        await t.commit();
+        res.json({ 
+            success: true, 
+            message: 'Contre-proposition créée avec succès',
+            data: responseData
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('Erreur dans makeCounterProposal:', error);
+        res.status(400).json({ 
+            success: false, 
+            message: error.message,
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+    exports.createReservationAuto = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const {
+             agencyId, campaignId,
+            agencyVolId, endAt, returnVolId,
+            startDestinationId, endDestinationId, agencyClassId,
+            tripType, description,passengers
+        } = req.body;
+
+         // VALIDATION ET CORRECTION DE endAt
+        let validatedEndAt = null;
+
+      //  if (tripType === 'round-trip' && endAt) {
+            // Pour les aller-retour, valider la date de retour
+    //        validatedEndAt = new Date(endAt);
+    //        if (isNaN(validatedEndAt.getTime())) {
+    //            throw new Error('❌ Date de retour invalide.');
+  //          }
+//        }
+
+       // Log pour déboguer
+        console.log('🔍 endAt reçu:', endAt, 'Type:', typeof endAt);
+        console.log('🔍 tripType:', tripType);
+
+        // Uniquement traiter endAt pour les aller-retour
+        if (tripType === 'round-trip') {
+            if (endAt && endAt !== null && endAt !== 'null') {
+                validatedEndAt = new Date(endAt);
+                if (isNaN(validatedEndAt.getTime())) {
+                    throw new Error('❌ Date de retour invalide.');
+                }
+                console.log('✅ Date de retour validée:', validatedEndAt);
+            } else {
+                // Pour un aller-retour sans date de retour, c'est une erreur
+                throw new Error('❌ Une date de retour est requise pour un vol aller-retour.');
+            }
+        } else {
+            // Pour les vols simples, endAt doit être null
+            validatedEndAt = null;
+            console.log('✅ Vol simple - endAt défini à null');
+        }
+
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide.');
+        }
+
+        console.log('📩 Données reçues:', JSON.stringify(req.body, null, 2));
+                const user = await User.findByPk(req.user.id);
+             let customer = await Customer.findOne({ where: { userId: req.user.id } });
+
+    if (!customer) {
+      customer = await Customer.create({
+        userId: req.user.id,
+        firstName:user?.name,
+        createdBy: req.user.id
+      }, { transaction: t });
+    }
+// const departureVol = await AgencyFlights.findOne({
+  //         where: {
+    //           id: agencyVolId,
+      //         [Op.and]: [
+        //            sequelize.where(sequelize.fn('DATE', sequelize.col('departureTime')), '=', startAt)
+          //      ]
+          //  }
+       // });
+
+      // if (!departureVol) {
+         // throw new Error('❌ Aucun vol disponible pour la date de départ sélectionnée.');
+       // }
+ let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(req.body.passengers)
+                ? req.body.passengers
+                : JSON.parse(req.body.passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers');
+        }
+
+        const totalPrice = await calculateTotalPriceWithClass(
+            agencyVolId, agencyClassId, returnVolId, tripType,
+            parsedPassengers, agencyId
+        );
+    console.log('💰 Prix total calculé:', totalPrice);
+          // Création de la réservation avec gestion appropriée de endAt
+        const reservationData = {
+            customerId: customer.id,
+            agencyId,
+            campaignId: campaignId || null,
+            startDestinationId,
+            endDestinationId,
+            agencyVolId,
+            startAt,
+            returnVolId: tripType === 'round-trip' ? returnVolId : null,
+            description,
+            status: "Pending",
+            agencyClassId,
+            tripType,
+            totalPrice,
+            createdBy: req.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+
+        // Définir explicitement endAt selon le type de voyage
+        if (tripType === 'round-trip' && validatedEndAt) {
+            reservationData.endAt = validatedEndAt;
+        } else {
+            // Pour les vols simples OU quand validatedEndAt est null
+            reservationData.endAt = null;
+        }
+
+        console.log('💾 Données de réservation à sauvegarder:', {
+            ...reservationData,
+            endAt: reservationData.endAt
+        });
+        const newReservation = await Reservation.create(reservationData, { transaction: t });
+      //  const newReservation = await Reservation.create({
+        //    customerId:customer.id, agencyId, campaignId: campaignId || null,
+      //      startDestinationId, endDestinationId, agencyVolId,
+    //        startAt, endAt:validatedEndAt
+  //      , returnVolId: tripType === 'round-trip' ? returnVolId : null,
+  //          description, status: "Pending",
+  //          agencyClassId, tripType, totalPrice,
+  //          createdBy: req.user.id, createdAt: new Date(), updatedAt: new Date(),
+//        }, { transaction: t });
+
+        for (const passenger of parsedPassengers) {
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                ...passenger,
+            }, { transaction: t });
+
+            if (!passenger.document || !Array.isArray(passenger.document)) continue;
+
+            for (const doc of passenger.document) {
+    const files = doc.files || [];
+ for (const file of files) {
+        let savedFilePath = null;
+        let mimeType = null;
+
+        if (file.base64) {
+            const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+            if (!matches || matches.length !== 3) {
+                throw new Error('❌ Format base64 invalide.');
+            }
+
+            mimeType = matches[1];
+            const buffer = Buffer.from(matches[2], 'base64');
+            const fileExt = mimeType.split('/')[1];
+            const filename = `document_${uuidv4()}.${fileExt}`;
+            const uploadPath = path.join(__dirname, '..', 'uploads', filename);
+
+            fs.writeFileSync(uploadPath, buffer);
+            savedFilePath = `uploads/${filename}`;
+        }
+
+        await Document.create({
+            relatedEntity: 'Passenger',
+            relatedEntityId: newPassenger.id,
+            typeDocument: doc.documentType || 'unknown',
+            documentNumber: doc.documentNumber || 'N/A',
+            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+            documentPath: savedFilePath,
+            fileType: mimeType,
+            createdBy: req.user.id,
+        }, { transaction: t });
+    }
+}
+}
+        await t.commit();
+        res.status(201).json(newReservation);
+
+ } catch (err) {
+        console.error('❌ Erreur lors de la création de la réservation :', err);
+        await t.rollback();
+        res.status(400).json({ status: 'fail', error: err.message });
+    }
+};
+
+
+
+exports.createReservation = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const {
+             agencyId, campaignId,
+            agencyVolId, endAt, returnVolId,
+            startDestinationId, endDestinationId, agencyClassId,
+            tripType, description
+        } = req.body;
+        
+         // VALIDATION ET CORRECTION DE endAt
+        let validatedEndAt = null;
+        
+        if (tripType === 'round-trip' && endAt) {
+            // Pour les aller-retour, valider la date de retour
+            validatedEndAt = new Date(endAt);
+            if (isNaN(validatedEndAt.getTime())) {
+                throw new Error('❌ Date de retour invalide.');
+            }
+        }
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide.');
+        }
+
+        console.log('📩 Données reçues:', JSON.stringify(req.body, null, 2));
+ 
+        const user = await User.findByPk(req.user.id);
+            let customer = await Customer.findOne({ where: { userId: req.user.id } });
+
+
+    if (!customer) {
+      customer = await Customer.create({
+        userId: req.user.id,
+       firstName:user?.name,
+        createdBy: req.user.id
+      }, { transaction: t });
+    }
+ 
+
+        //const departureVol = await AgencyFlights.findOne({
+          //  where: {
+            //    id: agencyVolId,
+              //  [Op.and]: [
+               //     sequelize.where(sequelize.fn('DATE', sequelize.col('departureTime')), '=', startAt)
+               // ]
+           // }
+       // });
+
+       // if (!departureVol) {
+         //   throw new Error('❌ Aucun vol disponible pour la date de départ sélectionnée.');
+       // }
+        // 1. D'abord trouver le vol
+               // 1. RÉCUPÉRER LE VOL AGENCE SPÉCIFIQUE
+       
+          
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(req.body.passengers)
+                ? req.body.passengers
+                : JSON.parse(req.body.passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers');
+        }
+
+        const totalPrice = await calculateTotalPriceWithClass(
+            agencyVolId, agencyClassId, returnVolId, tripType,
+            parsedPassengers, agencyId
+        );
+
+        const newReservation = await Reservation.create({
+            customerId:customer.id, agencyId, campaignId: campaignId || null,
+            startDestinationId, endDestinationId, agencyVolId,
+            startAt, endAt:validatedEndAt
+        , returnVolId: tripType === 'round-trip' ? returnVolId : null,
+            description, status: "Pending",
+            agencyClassId, tripType, totalPrice,
+            createdBy: req.user.id, createdAt: new Date(), updatedAt: new Date(),
+        }, { transaction: t });
+
+        for (const passenger of parsedPassengers) {
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                ...passenger,
+            }, { transaction: t });
+
+            if (!passenger.document || !Array.isArray(passenger.document)) continue;
+
+            for (const doc of passenger.document) {
+    const files = doc.files || [];
+
+    for (const file of files) {
+        let savedFilePath = null;
+        let mimeType = null;
+
+        if (file.base64) {
+            const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+            if (!matches || matches.length !== 3) {
+                throw new Error('❌ Format base64 invalide.');
+            }
+
+            mimeType = matches[1];
+            const buffer = Buffer.from(matches[2], 'base64');
+            const fileExt = mimeType.split('/')[1];
+            const filename = `document_${uuidv4()}.${fileExt}`;
+            const uploadPath = path.join(__dirname, '..', 'uploads', filename);
+
+            fs.writeFileSync(uploadPath, buffer);
+            savedFilePath = `uploads/${filename}`;
+        }
+
+        await Document.create({
+            relatedEntity: 'Passenger',
+            relatedEntityId: newPassenger.id,
+            typeDocument: doc.documentType || 'unknown',
+            documentNumber: doc.documentNumber || 'N/A',
+            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+            documentPath: savedFilePath,
+            fileType: mimeType,
+            createdBy: req.user.id,
+        }, { transaction: t });
+    }
+}
+}
+        await t.commit();
+        res.status(201).json(newReservation);
+
+    } catch (err) {
+        console.error('❌ Erreur lors de la création de la réservation :', err);
+        await t.rollback();
+        res.status(400).json({ status: 'fail', error: err.message });
+    }
+};
+
+
+   // Fonction pour nettoyer les valeurs avant insertion
+const cleanValue = (val) => {
+  if (val === "" || val === undefined) return null;
+  if (typeof val === 'string' && !isNaN(val)) return parseInt(val);
+  return val;
+};
+
+exports.createReservationDemande = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        // 1. Nettoyage et validation des données de base
+        const {
+            agencyId,
+            campaignId,
+            agencyVolId,
+            endAt,
+            returnVolId,
+            startDestinationId,
+            endDestinationId,
+            agencyClassId,
+            tripType = 'one-way',
+            description,
+            totalPrice
+        } = req.body;
+
+        // Validation des champs obligatoires
+        if (!agencyId) throw new Error('L\'agence est obligatoire');
+//        if (!agencyVolId) throw new Error('Le vol est obligatoire');
+        if (!startDestinationId) throw new Error('La destination de départ est obligatoire');
+        if (!endDestinationId) throw new Error('La destination d\'arrivée est obligatoire');
+
+        // Validation des dates
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide.');
+        }
+
+        if (tripType === 'round-trip' && endAt) {
+            const parsedEndAt = new Date(endAt);
+            if (isNaN(parsedEndAt.getTime())) {
+                throw new Error('❌ Date de retour invalide.');
+            }
+            if (parsedEndAt < startAt) {
+                throw new Error('❌ La date de retour doit être postérieure à la date de départ.');
+            }
+        }
+
+        console.log('📩 Données reçues:', JSON.stringify(req.body, null, 2));
+           const user = await User.findByPk(req.user.id);
+        // 2. Gestion du client (customer)
+        let customer = await Customer.findOne({ where: { userId: req.user.id } });
+        if (!customer) {
+            customer = await Customer.create({
+                userId: req.user.id,
+              firstName:user?.name,
+                createdBy: req.user.id
+            }, { transaction: t });
+        }
+
+        // 3. Traitement des passagers
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(req.body.passengers)
+                ? req.body.passengers
+                : JSON.parse(req.body.passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers');
+        }
+
+        if (parsedPassengers.length === 0) {
+            throw new Error('❌ Au moins un passager est requis');
+        }
+
+        // Validation des passagers
+        for (const passenger of parsedPassengers) {
+            validatePassenger(passenger);
+            
+            // Normalisation des documents (gère à la fois document et documents)
+            if (!passenger.document && passenger.documents) {
+                passenger.document = passenger.documents;
+            }
+        }
+
+        // 4. Calcul du prix total
+     //   const calculatedPrice = await calculateTotalPriceWithClass(
+       //     agencyVolId,
+         //   cleanValue(agencyClassId),
+           // cleanValue(returnVolId),
+         //   tripType,
+         //   parsedPassengers,
+           // agencyId
+       // );
+        const calculatedPrice = 0;
+        // 5. Création de la réservation avec valeurs nettoyées
+        const newReservation = await Reservation.create({
+            customerId: customer.id,
+            agencyId: cleanValue(agencyId),
+            campaignId: cleanValue(campaignId),
+            startDestinationId: cleanValue(startDestinationId),
+            endDestinationId: cleanValue(endDestinationId),
+            agencyVolId: cleanValue(agencyVolId),
+            startAt,
+            endAt: tripType === 'round-trip' ? new Date(endAt) : null,
+            returnVolId: tripType === 'round-trip' ? cleanValue(returnVolId) : null,
+            description: description || null,
+            status: "demand",
+            agencyClassId: cleanValue(agencyClassId),
+            tripType,
+            totalPrice: calculatedPrice,
+            createdBy: req.user.id
+        }, { transaction: t });
+
+        // 6. Création des passagers et documents
+        for (const passenger of parsedPassengers) {
+            const newPassenger = await Passenger.create({
+                reservationId: newReservation.id,
+                firstName: passenger.firstName,
+                lastName: passenger.lastName,
+                gender: passenger.gender,
+                birthDate: new Date(passenger.birthDate),
+                birthPlace: passenger.birthPlace || null,
+                nationality: passenger.nationality || null,
+                profession: passenger.profession || null,
+                address: passenger.address || null,
+                typePassenger: passenger.typePassenger || 'ADLT',
+                status: 'active'
+            }, { transaction: t });
+
+            // Traitement des documents
+            // Traitement des documents en base
+         // Premier code ADAPTÉ pour utiliser savedFilePath comme le deuxième code
+           if (passenger.document && Array.isArray(passenger.document)) {
+    for (const doc of passenger.document) {
+        let savedFilePath = null;
+        let mimeType = null;
+
+        // Si un fichier en base64 est présent (format: base64 pur)
+        if (doc.fileBase64 && doc.fileName) {
+            const uploadDir = path.join(__dirname, '..', 'uploads');
+            if (!fs.existsSync(uploadDir)) {
+                fs.mkdirSync(uploadDir, { recursive: true });
+            }
+
+            // Déterminer l'extension du fichier
+            const fileExtension = path.extname(doc.fileName) || '.bin';
+            const filename = `document_${uuidv4()}${fileExtension}`;
+            const uploadPath = path.join(uploadDir, filename);
+
+            // Convertir base64 en buffer et écrire le fichier
+            try {
+                const fileBuffer = Buffer.from(doc.fileBase64, 'base64');
+                fs.writeFileSync(uploadPath, fileBuffer);
+                
+                savedFilePath = `uploads/${filename}`;
+                mimeType = doc.fileType || mime.lookup(fileExtension) || 'application/octet-stream';
+            } catch (error) {
+                console.error('❌ Erreur lors de l\'écriture du fichier base64:', error);
+                throw new Error('Format base64 invalide ou corrompu.');
+            }
+        }
+        // Support du format data URL (data:mime/type;base64,xxxx)
+        else if (doc.files && Array.isArray(doc.files)) {
+            for (const file of doc.files) {
+                if (file.base64) {
+                    // Vérifier si c'est un format data URL
+                    if (file.base64.startsWith('data:')) {
+                        const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+                        if (!matches || matches.length !== 3) {
+                            throw new Error('❌ Format data URL base64 invalide.');
+                        }
+
+                        mimeType = matches[1];
+                        const base64Data = matches[2];
+                        
+                        try {
+                            const buffer = Buffer.from(base64Data, 'base64');
+                            const fileExt = mime.extension(mimeType) || 'bin';
+                            const filename = `document_${uuidv4()}.${fileExt}`;
+                            const uploadDir = path.join(__dirname, '..', 'uploads');
+
+                            if (!fs.existsSync(uploadDir)) {
+                                fs.mkdirSync(uploadDir, { recursive: true });
+                            }
+
+                            const uploadPath = path.join(uploadDir, filename);
+                            fs.writeFileSync(uploadPath, buffer);
+                            savedFilePath = `uploads/${filename}`;
+                        } catch (error) {
+                            console.error('❌ Erreur lors de l\'écriture du fichier data URL:', error);
+                            throw new Error('Base64 data URL corrompu.');
+                        }
+                    } 
+                    // Si c'est un base64 pur (sans data:...)
+                    else {
+                        try {
+                            // Tenter de décoder le base64 pur
+                            const buffer = Buffer.from(file.base64, 'base64');
+                              // Déterminer le type MIME à partir du nom du fichier
+                            if (file.name) {
+                                mimeType = mime.lookup(file.name) || file.type || 'application/pdf';
+                            } else if (file.type) {
+                                mimeType = file.type;
+                            } else {
+                                // Deviner le type MIME à partir du contenu ou utiliser PDF par défaut
+                                const header = buffer.slice(0, 5).toString();
+                                mimeType = header.startsWith('%PDF') ? 'application/pdf' : 'application/octet-stream';
+                            }   
+                            // Déterminer le type MIME à partir du nom du fichier ou utiliser application/pdf par défaut
+                            mimeType = file.type || 'application/pdf';
+                            const fileExt = mime.extension(mimeType) || 'pdf';
+                            const filename = `document_${uuidv4()}.${fileExt}`;
+                            const uploadDir = path.join(__dirname, '..', 'uploads');
+
+                            if (!fs.existsSync(uploadDir)) {
+                                fs.mkdirSync(uploadDir, { recursive: true });
+                            }
+
+                            const uploadPath = path.join(uploadDir, filename);
+                            fs.writeFileSync(uploadPath, buffer);
+                            savedFilePath = `uploads/${filename}`;
+                            
+                        } catch (error) {
+                            console.error('❌ Erreur lors du décodage du base64 pur:', error);
+                            throw new Error('Format base64 pur invalide.');
+                        }
+                    }
+                    
+                    // Sortir après le premier fichier traité (ou gérer plusieurs fichiers si nécessaire)
+                    break;
+                }
+            }
+        }
+
+        // Créer l'entrée dans la table Document seulement si un fichier a été sauvegardé
+        if (savedFilePath) {
+            await Document.create({
+                relatedEntity: 'Passenger',
+                relatedEntityId: newPassenger.id,
+                typeDocument: doc.documentType || 'unknown',
+                documentNumber: doc.documentNumber || 'N/A',
+                issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                documentPath: savedFilePath,
+                fileType: mimeType,
+                createdBy: req.user.id
+            }, { transaction: t });
+        } else {
+            // Créer une entrée sans fichier si nécessaire
+            await Document.create({
+                relatedEntity: 'Passenger',
+                relatedEntityId: newPassenger.id,
+                typeDocument: doc.documentType || 'unknown',
+                documentNumber: doc.documentNumber || 'N/A',
+                issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                documentPath: null,
+                fileType: null,
+                createdBy: req.user.id
+            }, { transaction: t });
+        }
+    }
+} }       
+        await t.commit();
+
+        res.status(201).json({
+            success: true,
+            message: 'Réservation créée avec succès',
+            data: {
+                reservationId: newReservation.id,
+                totalPrice: calculatedPrice
+            }
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('❌ Erreur création réservation:', error);
+
+        res.status(400).json({
+            success: false,
+            message: error.message || 'Erreur lors de la création de la réservation',
+            error: process.env.NODE_ENV === 'development' ? {
+                message: error.message,
+                stack: error.stack,
+                details: error.errors // Si c'est une erreur Sequelize
+            } : undefined
+        });
+    }
+};
+
+// Fonction de validation améliorée
+function validatePassenger(passenger) {
+    const errors = [];
+    
+    if (!passenger.firstName?.trim()) errors.push('Prénom manquant');
+    if (!passenger.lastName?.trim()) errors.push('Nom manquant');
+    if (!['masculin', 'feminin'].includes(passenger.gender)) errors.push('Genre invalide (M ou F attendu)');
+    if (!passenger.birthDate || isNaN(new Date(passenger.birthDate).getTime())) {
+        errors.push('Date de naissance invalide');
+    }
+    
+    if (passenger.document) {
+        for (const doc of [].concat(passenger.document)) {
+            if (!doc.documentType?.trim()) errors.push('Type de document manquant');
+            if (!doc.documentNumber?.trim()) errors.push('Numéro de document manquant');
+        }
+    }
+
+    if (errors.length > 0) {
+        throw new Error(`Erreurs de validation passager: ${errors.join(', ')}`);
+    }
+}
+
+  
+// notification et email create Reservation
+// exports.createReservation = async (req, res) => {
+//     const t = await sequelize.transaction();
+//     try {
+//         const {
+//             customerId,
+//             agencyId,
+//             volId,
+//             startAt,
+//             endAt,
+//             returnVolId, startDestinationId, endDestinationId,
+//             classId,
+//             tripType,
+//         } = req.body;
+
+//         console.log('req.body:', req.body);
+
+//         const totalPrice = await calculateTotalPriceWithClass(volId, classId, returnVolId, tripType);
+
+//         // Création de la réservation
+//         const newReservation = await Reservation.create({
+//             customerId,
+//             agencyId,
+//             startDestinationId,
+//             endDestinationId,
+//             volId,
+//             startAt,
+//             endAt,
+//             returnVolId: returnVolId || null,
+//             description: req.body.description,
+//             status: "Pending",
+//             classId,
+//             tripType,
+//             totalPrice,
+//             createdBy: req.user.id,
+//             createdAt: new Date(),
+//             updatedAt: new Date(),
+//         }, { transaction: t });
+
+//         await t.commit();
+
+//         // Récupérer les emails des utilisateurs liés à l'agence et au customer
+//         const agency = await Agency.findByPk(agencyId, { include: { model: User, as: 'user' } });
+//         const customer = await Customer.findByPk(customerId, { include: { model: User, as: 'User' } });
+
+//         const agencyEmail = agency?.user?.email;
+//         const customerEmail = customer?.User?.email;
+
+//         // Notifier l'agence
+//         if (agencyEmail) {
+//             await NotificationService.notify(
+//                 agency.userId,
+//                 "Nouvelle réservation",
+//                 `Une nouvelle réservation a été effectuée pour votre agence.`,
+//                 agencyEmail
+//             );
+//         }
+
+//         // Notifier le client
+//         if (customerEmail) {
+//             await NotificationService.notify(
+//                 customer.userId,
+//                 "Confirmation de réservation",
+//                 `Votre réservation a bien été prise en compte. En attente de confirmation.`,
+//                 customerEmail
+//             );
+//         }
+
+//         res.status(201).json(newReservation);
+//     } catch (err) {
+//         console.error('Erreur lors de la création de la réservation :', err);
+//         await t.rollback();
+//         res.status(500).json({ status: 'fail', error: err.message });
+//     }
+// };
+// exports.createReservation = async (req, res) => {
+//     try {
+//         const {
+//             customerId,
+//             agencyId,
+//             volId,
+//             startAt,
+//             endAt,
+//             returnVolId,
+//             classId,
+//             tripType,
+//         } = req.body;
+//     console.log('req.body',req.body)
+//         const totalPrice = await calculateTotalPriceWithClass(volId, classId, returnVolId, tripType);
+
+//         // Création de la réservation
+//         const newReservation= await Reservation.create({
+//             customerId,
+//             agencyId,
+//             volId,
+//             startAt,
+//             endAt,
+//             returnVolId: returnVolId || null,
+//             classId,
+//             tripType,
+//             totalPrice,
+//             createdBy: req.user.id,
+//             createdAt: new Date(),
+//             updatedAt: new Date(),
+//         });
+
+//         // Traitement des passagers
+//         const parsedPassengers = JSON.parse(req.body.passengers || '[]');
+
+//          for (const passenger of parsedPassengers) {
+//             const newPassenger = await Passenger.create({
+//                 reservationId: newReservation.id,
+//                 ...passenger, // Sauvegarder les autres champs du passager
+//             }, { transaction: t });
+
+//             if (req.files) {
+//                 for (const [fieldname, files] of Object.entries(req.files)) {
+//                     if (fieldname.startsWith(`passengers[${parsedPassengers.indexOf(passenger)}][documents]`)) {
+//                         for (const file of files) {
+//                             const docData = {
+//                                 passengerId: newPassenger.id,
+//                                 documentType: passenger.documentType, // Extrait des données passager
+//                                 documentNumber: passenger.documentNumber, // Extrait des données passager
+//                                 documentPath: file.path,
+//                                 fileType: file.mimetype,
+//                             };
+//                             await Document.create(docData, { transaction: t });
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     await t.commit()
+//     res.status(201).json(newReservation);
+//         res.status(201).json({ status: 'success', data: reservation });
+//     } catch (err) {
+//         console.error('Erreur lors de la création de la réservation :', err);
+//         res.status(500).json({ status: 'fail', error: err.message });
+//     }
+// };
+// BON CODE CREATE RESERVATION 
+// exports.createReservation = async (req, res) => {
+//     const t = await sequelize.transaction();
+//     try {
+//         const {
+//             customerId, agencyId, campaignId,
+//             agencyVolId, startAt, endAt, returnVolId,
+//             startDestinationId, endDestinationId, agencyClassId,
+//             tripType
+//         } = req.body;
+
+//         console.log('📩 Données reçues du Front:', JSON.stringify(req.body, null, 2));
+        
+//         let parsedPassengers = [];
+//         try {
+//             parsedPassengers = Array.isArray(req.body.passengers)
+//                 ? req.body.passengers
+//                 : JSON.parse(req.body.passengers || '[]');
+//         } catch (error) {
+//             throw new Error('❌ Invalid passengers data format');
+//         }
+
+//         const totalPrice = await calculateTotalPriceWithClass(
+//             agencyVolId, agencyClassId, returnVolId, tripType,
+//             parsedPassengers, agencyId
+//         );
+
+//         const newReservation = await Reservation.create({
+//             customerId, agencyId, campaignId: campaignId || null,
+//             startDestinationId, endDestinationId, agencyVolId,
+//             startAt, endAt, returnVolId: returnVolId || null,
+//             description: req.body.description, status: "Pending",
+//             agencyClassId, tripType, totalPrice,
+//             createdBy: req.user.id, createdAt: new Date(), updatedAt: new Date(),
+//         }, { transaction: t });
+
+//         console.log('📋 Parsed passengers:', JSON.stringify(parsedPassengers, null, 2));
+        
+//         for (const [passengerIndex, passenger] of parsedPassengers.entries()) {
+//             console.log(`👤 Vérification du passager ${passengerIndex}:`, JSON.stringify(passenger, null, 2));
+
+//             const newPassenger = await Passenger.create({
+//                 reservationId: newReservation.id, ...passenger,
+//             }, { transaction: t });
+
+//             if (!passenger.documents || !Array.isArray(passenger.documents)) {
+//                 console.warn(`⚠️ Aucun document trouvé pour le passager ${passengerIndex}:`, passenger);
+//                 continue;
+//             }
+
+//             for (const [docIndex, doc] of passenger.documents.entries()) {
+//                 console.log(`📄 Document ${docIndex} →`, JSON.stringify(doc, null, 2));
+
+//                 if (!doc.issueDate || !doc.expirationDate) {
+//                     console.warn(`⚠️ Missing issueDate or expirationDate for document ${docIndex} of passenger ${passengerIndex}`);
+//                 }
+
+//                 const fileKey = `passengers-${passengerIndex}-documents-${docIndex}-file`;
+//                 const file = req.files.find((f) => f.fieldname === fileKey);
+
+//                 const parseDate = (dateString) => {
+//                     if (!dateString || typeof dateString !== 'string' || dateString.trim() === '') return null;
+//                     const parsedDate = new Date(`${dateString}T00:00:00.000Z`);
+//                     return isNaN(parsedDate.getTime()) ? null : parsedDate;
+//                 };
+
+//                 const docData = {
+//                     relatedEntity: 'Passenger',
+//                     relatedEntityId: newPassenger.id,
+//                     typeDocument: doc.documentType || 'unknown',
+//                     documentNumber: doc.documentNumber || 'N/A',
+//                     documentPath: file ? file.path : null,
+//                     issueDate: parseDate(doc.issueDate),
+//                     expirationDate: parseDate(doc.expirationDate),
+//                     fileType: file ? file.mimetype : null,
+//                     createdBy: req.user.id,
+//                 };
+
+//                 console.log('🔍 Vérification des dates:', {
+//                     issueDateOriginal: doc.issueDate,
+//                     issueDateParsed: docData.issueDate,
+//                     expirationDateOriginal: doc.expirationDate,
+//                     expirationDateParsed: docData.expirationDate,
+//                 });
+
+//                 await Document.create(docData, { transaction: t });
+//             }
+//         }
+
+//         await t.commit();
+//         res.status(201).json(newReservation);
+//     } catch (err) {
+//         console.error('❌ Erreur lors de la création de la réservation :', err);
+//         await t.rollback();
+//         res.status(500).json({ status: 'fail', error: err.message });
+//     }
+// };
+//exports.createReservation = async (req, res) => {
+  //  const t = await sequelize.transaction();
+   // try {
+     //   const {
+       //     customerId, agencyId, campaignId,
+         //   agencyVolId,  endAt, returnVolId,
+          //  startDestinationId, endDestinationId, agencyClassId,
+           // tripType
+        //} = req.body;
+        // Transforme startAt en objet Date
+
+        // Vérifier si la conversion a échoué (ex: date invalide)
+       // const startAt = new Date(req.body.startAt);
+//if (isNaN(startAt.getTime())) {
+//    throw new Error('❌ Date de départ invalide.');
+//}
+
+        
+  //      console.log('📩 Données reçues du Front:', JSON.stringify(req.body, null, 2));
+
+        // 🔍 1️⃣ Vérifier si le vol aller est disponible
+    //    const departureVol = await AgencyFlights.findOne({
+      //      where: {
+        //        id: agencyVolId,
+          //      [Op.and]: [
+            //        sequelize.where(sequelize.fn('DATE', sequelize.col('departureTime')), '=', startAt)
+              //  ] // Vérifier la date exacte
+
+
+        // 🔍 2️⃣ Vérifier si le vol retour est disponible (si applicable)
+        // let returnFlight = null;
+        // if (tripType === 'round-trip' && returnVolId) {
+        //     returnFlight = await Vol.findOne({
+        //         where: {
+        //             id: returnVolId,
+        //             departureTime: { [Op.eq]: new Date(endAt) } // Vérifier la date exacte
+        //         }
+        //     });
+
+        //     if (!returnFlight) {
+        //         throw new Error('❌ Aucun vol retour disponible pour la date sélectionnée.');
+        //     }
+        // }
+
+             // }
+
+        //const totalPrice = await calculateTotalPriceWithClass(
+            //agencyVolId, agencyClassId, returnVolId, tripType,
+          //  parsedPassengers, agencyId
+        //);
+
+        // ✅ Création de la réservation après vérification des vols
+      //  const newReservation = await Reservation.create({
+           // customerId, agencyId, campaignId: campaignId || null,
+           // startDestinationId, endDestinationId, agencyVolId,
+           // startAt, endAt, returnVolId: returnVolId || null,
+           // description: req.body.description, status: "Pending",
+           // agencyClassId, tripType, totalPrice,
+           // createdBy: req.user.id, createdAt: new Date(), updatedAt: new Date(),
+     
+
+// //     const { reservationId } = req.body;
+// //     console.log('req.body de reservationId',req.body)
+
+// //     // Vérifier si la réservation existe
+// //     const reservation = await Reservation.findByPk(reservationId, {
+// //         include: [
+// //             { model: Customer, as: "customerReservation" ,attributes:['id']},
+// //             { model: Passenger, as: "passengers" }, // Inclure les passagers
+// //         ],
+// //     });
+// // console.log(reservation)
+// //     if (!reservation) { 
+// //         throw new AppError('Reservation not found', 404);
+// //     }
+
+// //     if (reservation.status !== "Pending") {
+// //         throw new AppError('Reservation already processed', 400);
+// //     }
+
+// //     // Calculer la quantité (nombre de passagers) et le montant total
+// //     const quantity = reservation.passengers ? reservation.passengers.length : 0;
+// // if (quantity === 0) {
+// //     throw new AppError('No passengers associated with this reservation', 400);
+// // }
+
+// // const amount = reservation.totalPrice * quantity; 
+// // const tva = 18;
+// // const totalWithTax = amount * (1 + tva / 100);
+
+// // const transaction = await sequelize.transaction();
+// // try {
+// //     reservation.status = "Confirmed";
+// //     await reservation.save({ transaction });
+
+// //     console.log("Customer ID:", reservation.customerReservation?.id);
+// //     console.log("Passengers:", reservation.passengers.map(p => p.id)); // Vérification
+
+// //     // Créer une facture pour **chaque passager**
+// //     const invoices = await Promise.all(
+// //         reservation.passengers.map(passenger => 
+// //             Invoice.create({
+// //                 reservationId: reservation.id,
+// //                 customerId: reservation.customerReservation.id,
+// //                 agencyId: reservation.agencyId,
+// //                passengerId: reservation.passengers.length > 0 ? reservation.passengers[0].id : null, // Correctement défini
+// //                 amount,
+// //                 quantity,
+// //                 tva,
+// //                 totalWithTax,
+// //                 emissionAt: new Date(),
+// //                 balance: totalWithTax,
+// //                 status: 'unpaid',
+// //             }, { transaction })
+// //         )
+// //     );
+
+// //     await transaction.commit();
+
+// //     res.status(200).json({
+// //         status: "success",
+// //         message: "Reservation confirmed, invoices created",
+// //         data: { reservation, invoices },
+// //     });
+// // } catch (error) {
+// //     await transaction.rollback();
+// //     throw error;
+// // }
+// // }); 
+// exports.confirmReservation = catchAsync(async (req, res) => {
+//     const { reservationId } = req.body;
+
+//     // Validation: Vérifier que reservationId est valide
+//     if (!reservationId || isNaN(reservationId)) {
+//         throw new AppError('Invalid reservationId', 400);
+//     }
+
+//     console.log('req.body de reservationId', req.body);
+
+//     // Récupérer la réservation avec les passagers
+//     const reservation = await Reservation.findByPk(reservationId, {
+//         include: [
+//             { model: Customer, as: "customerReservation", attributes: ['id'] },
+//             { model: Passenger, as: "passengers" }, // Inclure les passagers
+//         ],
+//     });
+
+//     console.log(reservation);
+
+//     if (!reservation) {
+//         throw new AppError('Reservation not found', 404);
+//     }
+
+//     if (reservation.status !== "Pending") {
+//         throw new AppError('Reservation already processed', 400);
+//     }
+
+//     // Vérifier qu'il y a au moins un passager
+//     const quantity = reservation.passengers ? reservation.passengers.length : 0;
+//     if (quantity === 0) {
+//         throw new AppError('No passengers associated with this reservation', 400);
+//     }
+
+//     // Calcul du montant total avec TVA
+//     const amount = reservation.totalPrice * quantity;
+//     const tva = 18;
+//     const totalWithTax = amount * (1 + tva / 100);
+
+//     // Générer une référence unique pour la facture
+//     const generateInvoiceReference = () => {
+//         return `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+//     };
+    
+//     const transaction = await sequelize.transaction();
+//     try {
+//         // Mettre à jour le statut de la réservation
+//         reservation.status = "Confirmed";
+//         await reservation.save({ transaction });
+
+//         console.log("Customer ID:", reservation.customerReservation?.id);
+
+//         // Créer une seule facture pour la réservation
+//         const invoice = await Invoice.create({
+//             reservationId: reservation.id,
+//             customerId: reservation.customerReservation.id,
+//             agencyId: reservation.agencyId,
+//             passengerId: null, // Aucune association spécifique avec un passager
+//             amount,
+//             quantity,
+//             tva,
+//             totalWithTax,
+//             reference: generateInvoiceReference(),
+//             emissionAt: new Date(),
+//             balance: totalWithTax,
+//             status: 'unpaid',createdBy:req.user.id
+//         }, { transaction });
+
+//         await transaction.commit();
+
+//         res.status(200).json({
+//             status: "success",
+//             message: "Reservation confirmed, invoice created",
+//             data: { reservation, invoice },
+//         });
+//     } catch (error) {
+//         await transaction.rollback();
+//         console.error("Transaction rollback due to error:", error);
+//         res.status(500).json({
+//             status: "error",
+//             message: "An error occurred while confirming the reservation",
+//             error: error.message,
+//         });
+//     }
+// });
+
+// confirmation de reservation par agence send email et notifier customer
+// exports.confirmReservation = catchAsync(async (req, res) => {
+//     const { reservationId } = req.body;
+
+//     if (!reservationId || isNaN(reservationId)) {
+//         throw new AppError('Invalid reservationId', 400);
+//     }
+
+//     const reservation = await Reservation.findByPk(reservationId, {
+//         include: [
+//              { model: Customer, as: "customerReservation", include: { model: User, as: "user" } },
+//              { model: Agency, as: "agencyReservations", include: { model: User, as: "User" } },
+//             { model: Passenger, as: "passengers" },
+//         ],
+//     });
+
+//     if (!reservation) {
+//         throw new AppError('Reservation not found', 404);
+//     }
+
+//     if (reservation.status !== "Pending") {
+//         throw new AppError('Reservation already processed', 400);
+//     }
+
+//     const quantity = reservation.passengers ? reservation.passengers.length : 0;
+//     if (quantity === 0) {
+//         throw new AppError('No passengers associated with this reservation', 400);
+//     }
+
+//     const amount = reservation.totalPrice * quantity;
+//     const tva = 18;
+//     const totalWithTax = amount * (1 + tva / 100);
+
+//     const generateInvoiceReference = () => {
+//         return `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+//     };
+
+//     const transaction = await sequelize.transaction();
+//     try {
+//         reservation.status = "Confirmed";
+//         await reservation.save({ transaction });
+
+//         const invoice = await Invoice.create({
+//             reservationId: reservation.id,
+//             customerId: reservation.customerReservation.id,
+//             agencyId: reservation.agencyId,
+//             passengerId: null,
+//             amount,
+//             quantity,
+//             tva,
+//             totalWithTax,
+//             reference: generateInvoiceReference(),
+//             emissionAt: new Date(),
+//             balance: totalWithTax,
+//             status: 'unpaid',
+//             createdBy: req.user.id
+//         }, { transaction });
+
+//         await transaction.commit();
+
+//         // Récupérer les emails des utilisateurs liés à l'agence et au customer
+//         const agency = await Agency.findByPk(reservation.agencyId, { include: { model: User, as: 'User' } });
+//         const customer = await Customer.findByPk(reservation.customerReservation.id, { include: { model: User, as: 'user' } });
+
+//         // const agencyEmail = agency?.user?.email;
+//         // const customerEmail = customer?.User?.email;
+// const agencyEmail = reservation.agencyReservations?.User?.email;
+// const customerEmail = reservation.customerReservation?.user?.email;
+// console.log('agencuEmail',agencyEmail)
+// console.log('customerEmail',customerEmail)
+
+//         // Notifier l'agence
+//         // if (agencyEmail) {
+//         //     await NotificationService.notify(
+//         //         agency.userId,
+//         //         "Réservation confirmée",
+//         //         `La réservation ID ${reservation.id} a été confirmée.`,
+//         //         agencyEmail
+//         //     );
+//         // }
+
+//         // Notifier le client avec la facture en pièce jointe
+//         if (customerEmail) {
+//             const invoiceHtml = `
+//             <!DOCTYPE html>
+//             <html lang="fr">
+//             <head>
+//                 <meta charset="UTF-8">
+//                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+//                 <title>Facture</title>
+//             </head>
+//             <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+//                 <h2 style="color: #007BFF;">Facture</h2>
+//                 <p><strong>Référence:</strong> ${invoice.reference}</p>
+//                 <p><strong>Montant:</strong> ${invoice.totalWithTax} XF</p>
+//                 <p><strong>Status:</strong> ${invoice.status}</p>
+//                 <hr>
+//                 <p>Merci de procéder au paiement dès que possible.</p>
+//             </body>
+//             </html>
+//         `;
+        
+
+//             await NotificationService.sendEmail(
+//                 customerEmail,
+//                 "Votre facture de réservation ! veillez proceder aux paiements dans le plus bref delais ",
+//                 invoiceHtml,
+//                 { html: true }
+//             );
+//         }
+
+//         res.status(200).json({
+//             status: "success",
+//             message: "Reservation confirmed, invoice created",
+//             data: { reservation, invoice },
+//         });
+//     } catch (error) {
+//         await transaction.rollback();
+//         console.error("Transaction rollback due to error:", error);
+//         res.status(500).json({
+//             status: "error",
+//             message: "An error occurred while confirming the reservation",
+//             error: error.message,
+//         });
+//     }
+// });
+
+exports.confirmReservation = catchAsync(async (req, res) => {
+    const { reservationId } = req.body;
+  console.log('reservationId',req.body)
+    if (!reservationId || isNaN(reservationId)) {
+        throw new AppError('Invalid reservationId', 400);
+    }
+
+    const reservation = await Reservation.findByPk(reservationId, {
+        include: [
+            { model: Customer, as: "customerReservation", include: { model: User, as: "user" } },
+            { model: Agency, as: "agencyReservations", include: { model: User, as: "User" } },
+            { model: Passenger, as: "passengers" },
+            // { model:Destination,as:'startDestination'},
+            // { model:Destination,as:'endDestiantion'}
+        ],
+    });
+
+    if (!reservation) {
+        throw new AppError('Reservation not found', 404);
+    }
+
+    if (reservation.status !== "Pending") {
+        throw new AppError('Reservation already processed', 400);
+    }
+
+    const quantity = reservation.passengers ? reservation.passengers.length : 0;
+    if (quantity === 0) {
+        throw new AppError('No passengers associated with this reservation', 400);
+    }
+
+    const amount = reservation.totalPrice * quantity;
+    // const tva = 18;
+    // const totalWithTax = amount * (1 + tva / 100);
+
+    const generateInvoiceReference = () => {
+        return `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    };
+
+    const transaction = await sequelize.transaction();
+    try {
+        reservation.status = "Confirmed";
+        await reservation.save({ transaction });
+
+        const invoice = await Invoice.create({
+            reservationId: reservation.id,
+            customerId: reservation.customerReservation.id,
+            agencyId: reservation.agencyId,
+            passengerId: null,
+            amount,
+            quantity,
+            balance: amount,
+            reference: generateInvoiceReference(),
+            emissionAt: new Date(),
+           
+            status: 'unpaid',
+            createdBy: req.user.id
+        }, { transaction });
+
+        await transaction.commit();
+
+        // Récupérer les emails des utilisateurs liés à l'agence et au customer
+        const agencyEmail = reservation.agencyReservations?.User?.email;
+        const customerEmail = reservation.customerReservation?.user?.email;
+        const customerFirstName = reservation.customerReservation?.firstName || "N/A";
+        const customerLastName = reservation.customerReservation?.lastName || "N/A";
+
+        
+        const agencyName = reservation.agencyReservations?.name || "N/A";
+        const agencyAddress = reservation.agencyReservations?.address || "N/A";
+
+
+        console.log('agencyEmail:', agencyEmail);
+        console.log('customerEmail:', customerEmail);
+        console.log('customerFirstName',customerFirstName)
+        console.log('customerFirstName',customerLastName)
+
+        
+        console.log('agencyName',agencyName)
+
+
+
+
+        // Notifier l'agence
+        // if (agencyEmail) {
+        //     await NotificationService.notify(
+        //         reservation.agencyReservations?.User?.id,
+        //         "Réservation confirmée",
+        //         `La réservation ID ${reservation.id} a été confirmée.`,
+        //         agencyEmail
+        //     );
+        // }
+
+        // Notifier le client avec la facture en pièce jointe
+        if (customerEmail) {
+            const invoiceHtml = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Facture</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; background-color: #f4f4f4; padding: 20px; }
+            .container { max-width: 600px; background: #fff; padding: 20px; border-radius: 5px; box-shadow: 0px 0px 10px rgba(0,0,0,0.1); }
+            h2 { color: #007BFF; text-align: center; }
+            .header { text-align: left; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+            th { background-color: #007BFF; color: white; }
+            .footer { margin-top: 20px; font-size: 14px; text-align: center; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Facture de réservation</h2>
+
+            <!-- En-tête de la facture -->
+            <div class="header">
+                <p><strong>Client:</strong> ${customerFirstName} ${customerLastName} </p>
+                <p><strong>Agence:</strong> ${agencyName} ,${agencyAddress}</p>
+                <p><strong>Date d'emission:</strong>${new Date().toLocaleDateString()}
+            </div>
+
+            <!-- Tableau des détails de la facture -->
+            <table>
+                <thead>
+                    <tr>
+                        <th>Référence</th>
+                        <th>Nombre de passagers</th>
+                        <th>Total avec TVA (XF)</th>
+                        <th>Balance (XF)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>${invoice.reference}</td>
+                        <td>${invoice.quantity}</td>
+                        <td>${invoice.amount}</td>
+                        <td>${invoice.balance}</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p class="footer">Merci de procéder au paiement dès que possible sur la platforme TravelApp.</p>
+        </div>
+    </body>
+    </html>
+`;
+
+            await NotificationService.sendEmail(
+                customerEmail,
+                "Votre facture de réservation ! Veuillez procéder au paiement dans le plus brefs délais",
+                invoiceHtml,
+                { html: true }
+            );
+        }
+
+        res.status(200).json({
+            status: "success",
+            message: "Reservation confirmed, invoice created",
+            data: { reservation, invoice },
+        });
+    } catch (error) {
+        await transaction.rollback();
+        console.error("Transaction rollback due to error:", error);
+        res.status(500).json({
+            status: "error",
+            message: "An error occurred while confirming the reservation",
+            error: error.message,
+        });
+    }
+});
+
+        
+
+// const calculateTotalPriceWithClass = async (agencyVolId, agencyClassId, returnVolId, tripType) => {
+//     // Trouver le vol
+//     const vol = await AgencyFlights.findByPk(agencyVolId);
+//     if (!vol) throw new Error(`Vol avec l'ID ${agencyVolId} non trouvé`);
+
+//     // Trouver la classe
+//     const volClass = await AgencyClass.findByPk(agencyClassId);
+//     if (!volClass) throw new Error(`Classe avec l'ID ${agencyClassId} non trouvée`);
+
+//     let totalPrice = vol.price * volClass.priceMultiplier; // Prix aller simple
+
+//     // Ajouter le prix retour si aller-retour
+//     if (tripType === "round-trip") {
+//         const returnVol = await AgencyFlights.findByPk(returnVolId);
+//         if (!returnVol) throw new Error(`Vol retour avec l'ID ${returnVolId} non trouvé`);
+//         totalPrice += returnVol.price * volClass.priceMultiplier;
+//     }
+
+//     return totalPrice;
+// };
+     const calculateTotalPriceWithClass = async (agencyVolId, agencyClassId, returnVolId, tripType, passengers, agencyId) => {
+    console.log('🧮 Calcul du prix avec:', { agencyVolId, agencyClassId, returnVolId, tripType });
+
+    // 1️⃣ Récupérer la classe aller
+    const volClass = await AgencyClass.findByPk(agencyClassId);
+    if (!volClass) throw new Error(`Classe aller non trouvée`);
+
+    const basePrice = parseFloat(volClass.price) || 0;
+    let returnPrice = 0;
+
+    // 2️⃣ Récupérer la classe retour si aller-retour
+    if (tripType === "round-trip" && returnVolId) {
+        const returnClass = await AgencyClass.findOne({
+            where: { agencyVolId: returnVolId, classId: volClass.classId }
+        });
+        returnPrice = returnClass ? parseFloat(returnClass.price) || 0 : basePrice;
+    }
+
+    // 3️⃣ Récupérer les règles pour la classe aller
+    const rules = await PricingRule.findAll({
+        where: { agencyClassId }
+    });
+
+    const rulesMap = {};
+    rules.forEach(rule => {
+        rulesMap[rule.typePassenger] = parseFloat(rule.price) || 0;
+    });
+
+    // 4️⃣ Traiter les passagers
+    if (!Array.isArray(passengers)) {
+        try {
+            passengers = JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error("Impossible de parser passengers");
+        }
+    }
+
+    console.log("👥 Passagers reçus:", passengers);
+
+    // 5️⃣ Calculer le prix total
+    let finalPrice = 0;
+
+    for (const passenger of passengers) {
+        const type = passenger.typePassenger;
+        console.log(`\n👤 Traitement du passager - Type: ${type}`);
+
+        // ✅ PRIX ALLER pour ce passager
+        let passengerTotal = basePrice;
+        console.log(`  ➕ Prix aller: +${basePrice} FCFA`);
+
+        // ✅ AJOUTER LA RÈGLE si le passager n'est pas adulte (UNIQUEMENT sur l'aller)
+        if (type !== 'ADLT') {
+            const rulePrice = rulesMap[type] || 0;
+            if (rulePrice > 0) {
+                passengerTotal += rulePrice;
+                console.log(`  ➕ Règle ${type === 'CHD' ? 'enfant' : 'bébé'}: +${rulePrice} FCFA`);
+            } else {
+                console.log(`  ⚠️ Aucune règle pour ${type}`);
+            }
+        }
+
+        // ✅ AJOUTER LE RETOUR si aller-retour (SANS règle supplémentaire)
+        if (tripType === "round-trip" && returnVolId) {
+            passengerTotal += returnPrice;
+            console.log(`  ➕ Prix retour: +${returnPrice} FCFA`);
+        }
+
+        finalPrice += passengerTotal;
+        console.log(`  = Total pour ce passager: ${passengerTotal} FCFA`);
+    }
+
+    console.log('\n💰 PRIX TOTAL FINAL:', finalPrice);
+    return finalPrice;
+};
+     const calculateTotalPriceWithClassSansAllerRetour = async (agencyVolId, agencyClassId, returnVolId, tripType, passengers, agencyId) => {
+    console.log('🧮 Calcul du prix avec:', { agencyVolId, agencyClassId, returnVolId, tripType, agencyId });
+
+    // 1️⃣ Récupérer le vol principal
+    const vol = await AgencyFlights.findByPk(agencyVolId, {
+        include: [
+            {
+                model: AgencyClass,
+                as: 'agencyClasses',
+                where: { id: agencyClassId },
+                required: false
+            }
+        ]
+    });
+
+    if (!vol) {
+        throw new Error(`Vol avec l'ID ${agencyVolId} non trouvé`);
+    }
+
+    // 2️⃣ Récupérer la classe spécifique
+    const volClass = await AgencyClass.findByPk(agencyClassId);
+    if (!volClass) {
+        throw new Error(`Classe avec l'ID ${agencyClassId} non trouvée`);
+    }
+
+    console.log('📦 Vol trouvé:', vol.id);
+    console.log('📦 Classe trouvée:', volClass.id, 'Prix:', volClass.price);
+
+    // 3️⃣ Calcul du prix de base par passager (vol aller)
+    const basePricePerPassenger = parseFloat(volClass.price) || 0;
+    console.log('💰 Prix par passager (classe):', basePricePerPassenger);
+
+    // 4️⃣ Si aller-retour, ajouter le prix du vol retour
+    let returnPricePerPassenger = 0;
+    if (tripType === "round-trip" && returnVolId) {
+        const returnVol = await AgencyFlights.findByPk(returnVolId);
+        if (!returnVol) {
+            throw new Error(`Vol retour avec l'ID ${returnVolId} non trouvé`);
+        }
+
+        const returnClass = await AgencyClass.findOne({
+            where: {
+                agencyVolId: returnVolId,
+                classId: volClass.classId
+            }
+        });
+
+        if (returnClass) {
+            returnPricePerPassenger = parseFloat(returnClass.price) || 0;
+            console.log('💰 Prix retour par passager:', returnPricePerPassenger);
+        } else {
+            console.warn(`⚠️ Aucune classe trouvée pour le vol retour`);
+            returnPricePerPassenger = basePricePerPassenger;
+        }
+    }
+
+    // 5️⃣ Vérifier et parser les passagers
+    if (!Array.isArray(passengers)) {
+        try {
+            passengers = JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error("Impossible de parser passengers : " + error.message);
+        }
+    }
+
+    console.log("👥 Passagers:", passengers.map(p => p.typePassenger));
+
+    // 6️⃣ Calculer le prix total pour TOUS les passagers
+    let finalPrice = 0;
+
+    for (const passenger of passengers) {
+        const passengerType = passenger.typePassenger;
+        
+        // ✅ Étape 1: Ajouter le prix du vol pour ce passager
+        let passengerPrice = basePricePerPassenger;
+        console.log(`💰 Passager ${passengerType}: prix de base = ${basePricePerPassenger}`);
+        
+        // ✅ Étape 2: Ajouter la règle si le passager n'est pas adulte
+        if (passengerType !== 'ADLT') {
+            const pricingRule = await PricingRule.findOne({
+                where: {
+                    agencyClassId,
+                    typePassenger: passengerType
+                }
+            });
+
+            if (pricingRule) {
+                const rulePrice = parseFloat(pricingRule.price) || 0;
+                passengerPrice += rulePrice;
+                console.log(`   ➕ Règle ${passengerType}: +${rulePrice}`);
+            } else {
+                console.log(`   ⚠️ Pas de règle pour ${passengerType}`);
+            }
+        }
+        
+        // ✅ Étape 3: Ajouter le prix du passager au total
+        finalPrice += passengerPrice;
+        console.log(`   = Total pour ce passager: ${passengerPrice}`);
+        
+        // ✅ Étape 4: Si aller-retour, ajouter le prix du retour
+        if (tripType === "round-trip" && returnVolId) {
+            let returnPrice = returnPricePerPassenger;
+            
+            if (passengerType !== 'ADLT') {
+                const returnRule = await PricingRule.findOne({
+                    where: {
+                        agencyClassId: returnClass?.id,
+                        typePassenger: passengerType
+                    }
+                });
+                
+                if (returnRule) {
+                    returnPrice += parseFloat(returnRule.price) || 0;
+                }
+            }
+            
+            finalPrice += returnPrice;
+            console.log(`   🔄 Retour: +${returnPrice}`);
+        }
+    }
+
+    console.log('💰 PRIX TOTAL FINAL:', finalPrice);
+    return finalPrice;
+};
+     
+const calculateTotalPriceWithClassAncien = async (agencyVolId, agencyClassId, returnVolId, tripType, passengers, agencyId) => {
+    const vol = await AgencyFlights.findByPk(agencyVolId);
+    if (!vol) throw new Error(`Vol avec l'ID ${agencyVolId} non trouvé`);
+
+    const volClass = await AgencyClass.findByPk(agencyClassId);
+    if (!volClass) throw new Error(`Classe avec l'ID ${agencyClassId} non trouvée`);
+
+    let totalPrice = vol.price * volClass.priceMultiplier; // Prix aller simple
+
+    if (tripType === "round-trip") {
+        const returnVol = await AgencyFlights.findByPk(returnVolId);
+        if (!returnVol) throw new Error(`Vol retour avec l'ID ${returnVolId} non trouvé`);
+        totalPrice += returnVol.price * volClass.priceMultiplier;
+    }
+
+    // Vérifier si passengers est bien un tableau
+    if (!Array.isArray(passengers)) {
+        try {
+            passengers = JSON.parse(passengers || '[]');
+        } catch (error) {
+            throw new Error("Impossible de parser passengers : " + error.message);
+        }
+    }
+
+    console.log("Passagers après vérification:", passengers);
+
+    if (!Array.isArray(passengers)) {
+        throw new Error("passengers doit être un tableau");
+    }
+
+    for (const passenger of passengers) {
+        if (passenger.typePassenger !== "ADLT") {
+            const pricingRule = await PricingRule.findOne({
+                where: {
+                    agencyId,
+                    agencyVolId,
+                    agencyClassId,
+                    typePassenger: passenger.typePassenger
+                }
+            });
+
+            if (pricingRule) {
+                totalPrice += pricingRule.price;
+            } else {
+                console.warn(`Aucune règle tarifaire trouvée pour ${passenger.typePassenger}, utilisation du prix standard.`);
+            }
+        }
+    }
+
+    return totalPrice;
+};
+
+
+
+
+// exports.getReservations = catchAsync(async (req, res) => {
+//     const where = {};
+    
+//     // Filtrer selon le rôle de l'utilisateur
+//     // if (req.user.role === 'customer') {
+//     //     where.customerId = req.user.id;
+//     // } else if (req.user.role === 'agency') {
+//     //     where.agencyId = req.user.agencyId;
+//     // }
+
+//     // Filtres supplémentaires
+//     if (req.query.status) where.status = req.query.status;
+//     if (req.query.startDate) where.startAt = { [Op.gte]: new Date(req.query.startDate) };
+//     if (req.query.endDate) where.endAt = { [Op.lte]: new Date(req.query.endDate) };
+
+//     const reservations = await Reservation.findAll({
+//         where,
+//         include: [
+//             { model: User, as: 'customer' },
+            
+//             { model: Vol, as: 'vol' },
+//             { model: Campaign, as: 'campaign' },
+//             { model: Passenger, as: 'passengers' }
+//         ],
+//         order: [['createdAt', 'DESC']]
+//     });
+
+//     res.status(200).json({
+//         status: 'success',
+//         results: reservations.length,
+//         data: reservations
+//     });
+// });
+exports.getReservations = catchAsync(async (req, res) => {
+    let whereCondition = {};
+
+    // Vérifier si l'utilisateur est un Customer
+    const customer = await Customer.findOne({ where: { userId: req.user.id } });
+
+    if (customer) {
+        // L'utilisateur est un Customer → récupérer ses réservations
+        whereCondition.customerId = customer.id;
+    } else {
+        // Vérifier si l'utilisateur est une Agency
+        const agency = await Agency.findOne({ where: { userId: req.user.id } });
+        
+        if (agency) {
+            // L'utilisateur est une Agency → récupérer les réservations liées à cette agence
+            whereCondition.agencyId = agency.id;
+        } else {
+            return res.status(404).json({
+                status: 'fail',
+                message: "Aucun Customer ou Agency associé à cet utilisateur."
+            });
+        }
+    }
+
+    // Ajouter les filtres optionnels
+    if (req.query.status) whereCondition.status = req.query.status;
+    if (req.query.startDate) whereCondition.startAt = { [Op.gte]: new Date(req.query.startDate) };
+    if (req.query.endDate) whereCondition.endAt = { [Op.lte]: new Date(req.query.endDate) };
+
+    // Récupérer les réservations
+    const reservations = await Reservation.findAll({
+        where: whereCondition,
+        include: [
+            { model: User, as: 'customer' },
+            {model:Agency,as:'agencyReservations'},
+            { model: AgencyFlights, as: 'vols' ,include:{model:Vol,as:'flight'}},
+            { model: Campaign, as: 'campaign' },
+               { model: Destination, as: 'startDestination' },
+        { model: Destination, as: 'endDestination' },
+
+             { model: Passenger, as: 'passengers',include: [{
+                        model: Document,
+                        as: 'documents',
+
+                    }]  },
+            
+        ],
+        order: [['createdAt', 'DESC']]
+    });
+
+    res.status(200).json({
+        status: 'success',
+        results: reservations.length,
+        data: reservations
+    });
+});
+
+exports.getReservation = catchAsync(async (req, res) => {
+    const reservation = await Reservation.findByPk(req.params.id, {
+        include: [
+            { model: User, as: 'customer' },
+            {model:Agency,as:'agencyReservations'},
+            { model: AgencyVol, as: 'vols',include:{model:Vol,as:'flight',include:{model:Company,as:'companyVol'}} },
+            { model: Campaign, as: 'campaign' },
+            { model: Passenger, as: 'passengers',include: [{
+        model: Document,
+        as: 'documents', // ✅ Vérifie bien que ce `as` est présent ici aussi
+        where: { relatedEntity: 'Passenger' },
+        required: false
+      }] },
+            {model:AgencyClass,as:'class',include:{model:Class,as:'class'}},
+            { model: Destination, as: 'startDestination' },
+            { model: Destination, as: 'endDestination' },            
+        ]
+    });
+ 
+    if (!reservation) {
+        throw new AppError('Reservation not found', 404);
+    }
+
+    // Vérifier l'autorisation
+    if (req.user.role === 'customer' && reservation.customerId !== req.user.id) {
+        throw new AppError('You are not authorized to view this reservation', 403);
+    }
+
+    if (req.user.role === 'agency' && reservation.agencyId !== req.user.agencyId) {
+        throw new AppError('You are not authorized to view this reservation', 403);
+    }
+
+    res.status(200).json({
+        status: 'success',
+        data: reservation
+    });
+});
+
+exports.updateReservation = catchAsync(async (req, res) => {
+    const reservation = await Reservation.findByPk(req.params.id);
+    if (!reservation) {
+        throw new AppError('Reservation not found', 404);
+    }
+
+    // Vérifier l'autorisation
+    if (req.user.role === 'customer' && reservation.customerId !== req.user.id) {
+        throw new AppError('You are not authorized to update this reservation', 403);
+    }
+
+    if (req.user.role === 'agency' && reservation.agencyId !== req.user.agencyId) {
+        throw new AppError('You are not authorized to update this reservation', 403);
+    }
+
+    // Mettre à jour les champs autorisés
+    const allowedFields = [
+        'status',
+        'description',
+        'startAt',
+        'endAt',
+        'typeDocument',
+        'numDocument'
+    ];
+
+    allowedFields.forEach(field => {
+        if (req.body[field] !== undefined) {
+            reservation[field] = req.body[field];
+        }
+    });
+
+    reservation.updatedBy = req.user.id;
+    await reservation.save();
+
+    // Mettre à jour les passagers si fournis
+    if (req.body.passengers && Array.isArray(req.body.passengers)) {
+        await Passenger.destroy({ where: { reservationId: reservation.id } });
+        const passengerRecords = req.body.passengers.map(passenger => ({
+            ...passenger,
+            reservationId: reservation.id
+        }));
+        await Passenger.bulkCreate(passengerRecords);
+    }
+
+    // Récupérer la réservation mise à jour avec toutes ses relations
+    const updatedReservation = await Reservation.findByPk(reservation.id, {
+        include: [
+            { model: User, as: 'customer' },
+            
+            { model: Vol, as: 'vol' },
+            { model: Campaign, as: 'campaign' },
+            { model: Passenger, as: 'passengers' }
+        ]
+    });
+
+    res.status(200).json({
+        status: 'success',
+        data: updatedReservation
+    });
+});
+exports.cancelReservation = catchAsync(async (req, res) => {
+    const reservation = await Reservation.findByPk(req.params.id, {
+        include: [
+            {
+                model: Customer,
+                as: 'customerReservation',
+                include: [{ 
+                    model: User, 
+                    as: 'user' 
+                }]
+            },
+            {
+                model: Agency,
+                as: 'agencyReservations',
+                include: [{ 
+                    model: User, 
+                    as: 'User' 
+                }]
+            }
+        ]
+    });
+
+    if (!reservation) {
+        throw new AppError('Reservation not found', 404);
+    }
+
+    // Vérification des autorisations
+    const isCustomerOwner = reservation.customerReservation?.user?.id === req.user.id;
+    const isAgencyOwner = reservation.agencyReservations?.User?.id === req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isCustomerOwner && !isAgencyOwner && !isAdmin) {
+        throw new AppError('You are not authorized to cancel this reservation', 403);
+    }
+
+    const t = await sequelize.transaction();
+
+    try {
+        // Mise à jour du statut
+        await reservation.update({
+            status: 'Cancelled',
+            cancelledAt: new Date(),
+            updatedBy: req.user.id
+        }, { transaction: t });
+
+        // Historique de la réservation
+        await ReservationHistory.create({
+            reservationId: reservation.id,
+            action: 'reservation_cancelled',
+            changedBy: req.user.id,
+            details: {
+                cancelledBy: req.user.role,
+                reason: req.body.reason || 'No reason provided',
+                cancelledAt: new Date().toISOString()
+            }
+        }, { transaction: t });
+
+        // Notifications
+        const notificationsToCreate = [];
+        const reservationRef = `REF-${reservation.id.toString().padStart(6, '0')}`;
+
+        // Notification pour le client (si annulé par l'agence/admin)
+        if ((isAgencyOwner || isAdmin) && reservation.customerReservation?.user) {
+            notificationsToCreate.push({
+                userId: reservation.customerReservation.user.id,
+                title: 'Réservation annulée',
+                message: `Votre réservation ${reservationRef} a été annulée.`,
+                type: 'warning',
+                relatedEntity: 'reservation',
+                relatedEntityId: reservation.id,
+                metadata: {
+                    cancellationReason: req.body.reason,
+                    cancelledBy: req.user.name || `(${req.user.role})`
+                }
+            });
+        }
+
+        // Notification pour l'agence (si annulé par le client/admin)
+        if ((isCustomerOwner || isAdmin) && reservation.agencyReservations?.User) {
+            notificationsToCreate.push({
+                userId: reservation.agencyReservations.User.id,
+                title: 'Réservation annulée',
+                message: `La réservation ${reservationRef} a été annulée.`,
+                type: 'warning',
+                relatedEntity: 'reservation',
+                relatedEntityId: reservation.id,
+                metadata: {
+                    cancellationReason: req.body.reason,
+                    cancelledBy: req.user.name || `(${req.user.role})`,
+                    customerName: reservation.customerReservation?.name || 'Client'
+                }
+            });
+        }
+
+        // Notification système (logs)
+        console.log(`Reservation ${reservation.id} cancelled by ${req.user.role} ${req.user.id}`);
+
+        if (notificationsToCreate.length > 0) {
+            await Notification.bulkCreate(notificationsToCreate, { 
+                transaction: t,
+                returning: true
+            });
+            
+            // Optionnel: Déclencher des emails
+            if (process.env.SEND_EMAIL_ON_CANCELLATION === 'true') {
+                await sendCancellationEmails(notificationsToCreate, reservation);
+            }
+        }
+
+        await t.commit();
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                reservationId: reservation.id,
+                status: 'cancelled',
+                notificationsSent: notificationsToCreate.length,
+                timestamp: new Date()
+            }
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('Cancellation error:', error);
+        throw new AppError(`Cancellation failed: ${error.message}`, 500);
+    }
+});
+
+// Helper function for email notifications
+async function sendCancellationEmails(notifications, reservation) {
+    const emails = [];
+    
+    for (const notif of notifications) {
+        if (notif.userId) {
+            // Récupérer l'email de l'utilisateur
+            const user = await User.findByPk(notif.userId);
+            if (user && user.email) {
+                emails.push({
+                    to: user.email,
+                    subject: notif.title,
+                    text: notif.message,
+                    html: generateCancellationEmail(notif, reservation)
+                });
+            }
+        }
+    }
+    
+    if (emails.length > 0) {
+        await mailService.sendBatchEmails(emails);
+    }
+}
+exports.cancelReservationTest = catchAsync(async (req, res) => {
+    const reservation = await Reservation.findByPk(req.params.id, {
+        include: [
+            {
+                model: Customer,
+                include: [{ model: User }]
+            },
+            {
+                model: Agency,
+                include: [{ model: User }]
+            }
+        ]
+    });
+
+    if (!reservation) {
+        throw new AppError('Reservation not found', 404);
+    }
+
+    // Vérification des autorisations
+    const isCustomerOwner = reservation.Customer?.userId === req.user.id;
+    const isAgencyOwner = reservation.Agency?.userId === req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isCustomerOwner && !isAgencyOwner && !isAdmin) {
+        throw new AppError('You are not authorized to cancel this reservation', 403);
+    }
+
+    const t = await sequelize.transaction();
+
+    try {
+        // Mise à jour du statut
+        await reservation.update({
+            status: 'Cancelled',
+            cancelledAt: new Date(),
+            updatedBy: req.user.id
+        }, { transaction: t });
+
+        // Historique de la réservation
+        await ReservationHistory.create({
+            reservationId: reservation.id,
+            action: 'reservation_cancelled',
+            changedBy: req.user.id,
+            details: {
+                cancelledBy: req.user.role,
+                reason: req.body.reason || 'No reason provided'
+            }
+        }, { transaction: t });
+
+        // Notifications
+        const notificationsToCreate = [];
+
+        // Notification pour le client (si annulé par l'agence)
+        if (isAgencyOwner && reservation.Customer?.User) {
+            notificationsToCreate.push({
+                userId: reservation.Customer.User.id,
+                title: 'Réservation annulée',
+                message: `Votre réservation #${reservation.id} a été annulée par l'agence.`,
+                type: 'warning',
+                relatedEntity: 'reservation',
+                relatedEntityId: reservation.id
+            });
+        }
+
+        // Notification pour l'agence (si annulé par le client)
+        if (isCustomerOwner && reservation.Agency?.User) {
+            notificationsToCreate.push({
+                userId: reservation.Agency.User.id,
+                title: 'Réservation annulée',
+                message: `La réservation #${reservation.id} a été annulée par le client.`,
+                type: 'warning',
+                relatedEntity: 'reservation',
+                relatedEntityId: reservation.id
+            });
+        }
+
+        // Notification pour l'admin (si configuré)
+        if (process.env.ADMIN_NOTIFICATION_EMAIL) {
+            notificationsToCreate.push({
+                userId: null, // Serait traité par un système d'emails
+                email: process.env.ADMIN_NOTIFICATION_EMAIL,
+                title: 'Réservation annulée',
+                message: `Réservation #${reservation.id} annulée par ${req.user.role} (ID: ${req.user.id})`,
+                type: 'warning',
+                relatedEntity: 'reservation',
+                relatedEntityId: reservation.id
+            });
+        }
+
+        if (notificationsToCreate.length > 0) {
+            await Notification.bulkCreate(notificationsToCreate, { transaction: t });
+        }
+
+        await t.commit();
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                reservation,
+                notifications: notificationsToCreate.length
+            }
+        });
+
+    } catch (error) {
+        await t.rollback();
+        throw error;
+    }
+});
+
+exports.getReservationStats = catchAsync(async (req, res) => {
+    const where = {};
+    
+    if (req.user.role === 'customer') {
+        where.customerId = req.user.id;
+    } else if (req.user.role === 'agency') {
+        where.agencyId = req.user.agencyId;
+    }
+
+    const stats = await Reservation.findAll({
+        where,
+        attributes: [
+            'status',
+            [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+            [sequelize.fn('SUM', sequelize.col('amount')), 'totalAmount']
+        ],
+        group: ['status']
+    });
+
+    res.status(200).json({
+        status: 'success',
+        data: stats
+    });
+});
+exports.listReservations = async (req, res) => {
+    const { userId } = req.user.id;
+
+    if (!userId) {
+        return res.status(400).json({ message: "User ID is required" });
+    }
+
+    try {
+        const reservations = await Reservation.findAll({
+            include: [
+                {
+                    model: Customer,
+                    as: "customer",
+                    where: { userId }, // Filtrer uniquement les customers appartenant à l'utilisateur connecté
+                    attributes: ["id", "name"], // Ajouter les champs nécessaires
+                },{model :Agency,as:'agencyReservation'},
+                  { model: Destination, as: 'startDestination' },
+                  { model: Destination, as: 'endDestination' },
+
+                 {
+                    model: Passenger,
+                    as: "passengers", // Inclure les passagers (optionnel)
+                    attributes: ["id", "firstName", "lastName"],include: [{
+                        model: Document,
+                        as: 'documents',
+
+                    }] 
+                },
+                { model: AgencyFlights, as: 'vols',include:{model:Vol,as:'flight'} },
+            { model: Campaign, as: 'campaign' },
+            ],
+        });
+
+        res.status(200).json({ reservations });
+    } catch (error) {
+        console.error("Error fetching reservations:", error);
+        res.status(500).json({ message: "Failed to fetch reservations" });
+    }
+  };
+
+exports.getReservationsByAgency = catchAsync(async (req, res) => {
+    const { agencyId } = req.params;
+    const reservations = await Reservation.findAll({
+        where: { agencyId },
+        include: [
+            { model: User, as: 'customer' },
+            { model: AgencyFlights, as: 'vols',include:{model:Vol,as:'flight'} },
+            { model: Campaign, as: 'campaign' },
+            { model: Destination, as: 'startDestination' },
+                { model: Destination, as: 'endDestination' },
+            
+{ model: Passenger, as: 'passengers',include: [{
+                        model: Document,
+                        as: 'documents',
+
+                    }]  }
+        ],
+        order: [['createdAt', 'DESC']]
+    });
+
+    res.status(200).json({
+        status: 'success',
+        results: reservations.length,
+        data: reservations
+    });
+});
+
+exports.getReservationsByCustomer = catchAsync(async (req, res) => {
+    const { customerId } = req.params;
+    const reservations = await Reservation.findAll({
+        where: { customerId },
+        include: [
+            { model: User, as: 'customer' },{model: Agency,as:'agencyReservations'},
+            { model: AgencyFlights, as: 'vols',include:{model:Vol,as:'flight',include:{model:Company,as:'companyVol'}} },
+            { model: Campaign, as: 'campaign' },
+             {model:Agency,as:'agencyReservations'},
+             { model: Passenger, as: 'passengers',include: [{
+                        model: Document,
+                        as: 'documents',
+
+                    }]  },
+            {model:AgencyClass,as:'agencyClass',include:{model:Class,as:'class'}},
+             { model: Destination, as: 'startDestination' },
+        { model: Destination, as: 'endDestination' },
+
+        ],
+        order: [['createdAt', 'DESC']]
+    });
+
+    res.status(200).json({
+        status: 'success',
+        results: reservations.length,
+        data: reservations 
+    });
+});
+exports.getReservationsByAgencyUser = catchAsync(async (req, res) => {
+    // ID de l'utilisateur connecté (agence liée à ce user)
+    const userId = req.user.id; // Assurez-vous que l'authentification injecte `req.user`
+
+    // Vérifier si l'agence existe pour cet utilisateur
+    const agency = await Agency.findOne({
+        where: { userId },
+        include: [{ model: User, as: 'User' }] // Vérifie si l'agence appartient à l'utilisateur
+    });
+
+    if (!agency) {
+        return res.status(404).json({
+            status: 'fail',
+            message: "Aucune agence trouvée pour cet utilisateur."
+        });
+    }
+
+    // Récupérer les réservations pour cette agence
+    const reservations = await Reservation.findAll({
+        where: { agencyId: agency.id },
+        include: [
+            { model: User, as: 'customer' },{model:Agency,as:'agencyReservations'}, // Client
+            { 
+                model: AgencyFlights, 
+                as: 'vols',include:{model:Vol,as:'flight'} 
+                // Champs pertinents du vol
+                
+            }, { model: Destination, as: 'startDestination' },
+        { model: Destination, as: 'endDestination' },
+
+            { model: Campaign, as: 'campaign',  }, // Campagne
+            { model: Passenger, as: 'passengers',include: [{
+                        model: Document,
+                        as: 'documents',
+
+                    }]  } // Passagers
+        ],
+        order: [['createdAt', 'DESC']] // Trier par ordre décroissant
+    });
+
+    // Réponse
+    res.status(200).json({
+        status: 'success',
+        results: reservations.length,
+        data: reservations
+    });
+});
+
+
+exports.updateReservation = async (req, res) => {
+    const t = await sequelize.transaction();
+
+    try {
+        const { id } = req.params;
+        const {
+            agencyId, campaignId,
+            agencyVolId, endAt, returnVolId,
+            startDestinationId, endDestinationId, agencyClassId,
+            tripType, description
+        } = req.body;
+
+        // Vérifier que la réservation existe
+        const existingReservation = await Reservation.findOne({
+            where: { id },
+            include: [{ model: Passenger, include: [Document] }]
+        });
+
+        if (!existingReservation) {
+            throw new Error('❌ Réservation introuvable.');
+        }
+
+        // Validation de la date de départ
+        const startAt = new Date(req.body.startAt);
+        if (isNaN(startAt.getTime())) {
+            throw new Error('❌ Date de départ invalide.');
+        }
+
+        // Vérifier le vol de départ
+        const departureVol = await AgencyFlights.findOne({
+            where: {
+                id: agencyVolId,
+                [Op.and]: [
+                    sequelize.where(sequelize.fn('DATE', sequelize.col('departureTime')), '=', startAt)
+                ]
+            }
+        });
+
+        if (!departureVol) {
+            throw new Error('❌ Aucun vol disponible pour la date de départ sélectionnée.');
+        }
+
+        // Parser les passagers
+        let parsedPassengers = [];
+        try {
+            parsedPassengers = Array.isArray(req.body.passengers)
+                ? req.body.passengers
+                : JSON.parse(req.body.passengers || '[]');
+        } catch (error) {
+            throw new Error('❌ Format incorrect des passagers');
+        }
+
+        // Calculer le nouveau prix total
+        const totalPrice = await calculateTotalPriceWithClass(
+            agencyVolId, agencyClassId, returnVolId, tripType,
+            parsedPassengers, agencyId
+        );
+
+        // Mettre à jour la réservation
+        const updatedReservation = await existingReservation.update({
+            agencyId: cleanValue(agencyId),
+            campaignId: cleanValue(campaignId),
+            startDestinationId: cleanValue(startDestinationId),
+            endDestinationId: cleanValue(endDestinationId),
+            agencyVolId: cleanValue(agencyVolId),
+            startAt,
+            endAt: cleanValue(endAt),
+            returnVolId: cleanValue(returnVolId),
+            description,
+            agencyClassId: cleanValue(agencyClassId),
+            tripType,
+            totalPrice,
+            updatedAt: new Date(),
+            updatedBy: req.user.id
+        }, { transaction: t });
+
+        // Gestion des passagers existants et nouveaux
+        const existingPassengerIds = existingReservation.Passengers.map(p => p.id);
+        const newPassengerIds = [];
+
+        for (const passenger of parsedPassengers) {
+            let passengerRecord;
+            
+            if (passenger.id && existingPassengerIds.includes(passenger.id)) {
+                // Mettre à jour un passager existant
+                passengerRecord = await Passenger.findOne({
+                    where: { id: passenger.id, reservationId: id }
+                });
+
+                if (!passengerRecord) {
+                    throw new Error(`❌ Passager introuvable (ID: ${passenger.id})`);
+                }
+
+                await passengerRecord.update({
+                    ...passenger,
+                    updatedAt: new Date(),
+                    updatedBy: req.user.id
+                }, { transaction: t });
+            } else {
+                // Créer un nouveau passager
+                passengerRecord = await Passenger.create({
+                    reservationId: id,
+                    ...passenger,
+                    createdBy: req.user.id
+                }, { transaction: t });
+            }
+
+            newPassengerIds.push(passengerRecord.id);
+
+            // Gestion des documents
+            if (!passenger.document || !Array.isArray(passenger.document)) continue;
+
+            const existingDocIds = passengerRecord.Documents ? passengerRecord.Documents.map(d => d.id) : [];
+            const newDocIds = [];
+
+            for (const doc of passenger.document) {
+                if (doc.id && existingDocIds.includes(doc.id)) {
+                    // Mettre à jour un document existant
+                    const docRecord = await Document.findOne({
+                        where: { id: doc.id, relatedEntityId: passengerRecord.id }
+                    });
+
+                    if (docRecord) {
+                        await docRecord.update({
+                            typeDocument: doc.documentType || 'unknown',
+                            documentNumber: doc.documentNumber || 'N/A',
+                            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                            updatedAt: new Date(),
+                            updatedBy: req.user.id
+                        }, { transaction: t });
+                        newDocIds.push(docRecord.id);
+                    }
+                } else {
+                    // Créer un nouveau document
+                    const files = doc.files || [];
+                    for (const file of files) {
+                        let savedFilePath = null;
+                        let mimeType = null;
+
+                        if (file.base64) {
+                            const matches = file.base64.match(/^data:(.+);base64,(.+)$/);
+                            if (!matches || matches.length !== 3) {
+                                throw new Error('❌ Format base64 invalide.');
+                            }
+                            mimeType = matches[1];
+                            const buffer = Buffer.from(matches[2], 'base64');
+                            const fileExt = mimeType.split('/')[1];
+                            const filename = `document_${uuidv4()}.${fileExt}`;
+                            const uploadPath = path.join(__dirname, '..', 'uploads', filename);
+
+                            fs.writeFileSync(uploadPath, buffer);
+                            savedFilePath = `uploads/${filename}`;
+                        }
+
+                        const newDoc = await Document.create({
+                            relatedEntity: 'Passenger',
+                            relatedEntityId: passengerRecord.id,
+                            typeDocument: doc.documentType || 'unknown',
+                            documentNumber: doc.documentNumber || 'N/A',
+                            issueDate: doc.issueDate ? new Date(doc.issueDate) : null,
+                            expirationDate: doc.expirationDate ? new Date(doc.expirationDate) : null,
+                            documentPath: savedFilePath,
+                            fileType: mimeType,
+                            createdBy: req.user.id,
+                        }, { transaction: t });
+                        newDocIds.push(newDoc.id);
+                    }
+                }
+            }
+
+            // Supprimer les documents qui ne sont plus dans la requête
+            const docsToDelete = existingDocIds.filter(id => !newDocIds.includes(id));
+            if (docsToDelete.length > 0) {
+                await Document.destroy({
+                    where: { id: docsToDelete },
+                    transaction: t
+                });
+            }
+        }
+
+        // Supprimer les passagers qui ne sont plus dans la requête
+        const passengersToDelete = existingPassengerIds.filter(id => !newPassengerIds.includes(id));
+        if (passengersToDelete.length > 0) {
+            // Supprimer d'abord les documents associés
+            await Document.destroy({
+                where: {
+                    relatedEntity: 'Passenger',
+                    relatedEntityId: passengersToDelete
+                },
+                transaction: t
+            });
+
+            // Puis supprimer les passagers
+            await Passenger.destroy({
+                where: { id: passengersToDelete },
+                transaction: t
+            });
+        }
+
+        await t.commit();
+        res.status(200).json(updatedReservation);
+
+    } catch (err) {
+        console.error('❌ Erreur lors de la mise à jour de la réservation :', err);
+        await t.rollback();
+        res.status(400).json({ status: 'fail', error: err.message });
+    }
+};

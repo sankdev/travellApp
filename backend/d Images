@@ -1,0 +1,57 @@
+                     List of relations
+ Schema |            Name             |   Type   |  Owner  
+--------+-----------------------------+----------+---------
+ public | Agencies                    | table    | sig_bam
+ public | Agencies_id_seq             | sequence | sig_bam
+ public | Campaigns                   | table    | sig_bam
+ public | Campaigns_id_seq            | sequence | sig_bam
+ public | Companies                   | table    | sig_bam
+ public | Companies_id_seq            | sequence | sig_bam
+ public | Customers                   | table    | sig_bam
+ public | Customers_id_seq            | sequence | sig_bam
+ public | Destinations                | table    | sig_bam
+ public | Destinations_id_seq         | sequence | sig_bam
+ public | Images                      | table    | sig_bam
+ public | Images_id_seq               | sequence | sig_bam
+ public | Permissions                 | table    | sig_bam
+ public | Permissions_id_seq          | sequence | sig_bam
+ public | Reservations                | table    | sig_bam
+ public | Reservations_id_seq         | sequence | sig_bam
+ public | RolePermissions             | table    | sig_bam
+ public | RolePermissions_id_seq      | sequence | sig_bam
+ public | Roles                       | table    | sig_bam
+ public | Roles_id_seq                | sequence | sig_bam
+ public | UserAgencies                | table    | sig_bam
+ public | UserAgency                  | table    | sig_bam
+ public | UserRoles                   | table    | sig_bam
+ public | UserRoles_id_seq            | sequence | sig_bam
+ public | Users                       | table    | sig_bam
+ public | Users_id_seq                | sequence | sig_bam
+ public | Visas                       | table    | sig_bam
+ public | Visas_id_seq                | sequence | sig_bam
+ public | Vols                        | table    | sig_bam
+ public | Vols_id_seq                 | sequence | sig_bam
+ public | agencies                    | table    | sig_bam
+ public | agencies_id_seq             | sequence | sig_bam
+ public | class_agencies              | table    | sig_bam
+ public | class_agencies_id_seq       | sequence | sig_bam
+ public | classes                     | table    | sig_bam
+ public | classes_id_seq              | sequence | sig_bam
+ public | destination_agencies        | table    | sig_bam
+ public | destination_agencies_id_seq | sequence | sig_bam
+ public | documents                   | table    | sig_bam
+ public | documents_id_seq            | sequence | sig_bam
+ public | flight_agencies             | table    | sig_bam
+ public | flight_agencies_id_seq      | sequence | sig_bam
+ public | invoices                    | table    | sig_bam
+ public | invoices_id_seq             | sequence | sig_bam
+ public | passengers                  | table    | sig_bam
+ public | passengers_id_seq           | sequence | sig_bam
+ public | payment_modes               | table    | sig_bam
+ public | payment_modes_id_seq        | sequence | sig_bam
+ public | payments                    | table    | sig_bam
+ public | payments_id_seq             | sequence | sig_bam
+ public | pricing_rules               | table    | sig_bam
+ public | pricing_rules_id_seq        | sequence | sig_bam
+(52 rows)
+
